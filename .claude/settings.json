@@ -1,0 +1,44 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git commit)",
+      "Bash(git commit *)",
+      "Read(**/.env)",
+      "Read(**/.env.local)",
+      "Read(**/.env.*.local)",
+      "Read(**/.env.development)",
+      "Read(**/.env.production)",
+      "Read(**/.env.test)",
+      "Bash(cat *.env*)",
+      "Bash(less *.env*)",
+      "Bash(head *.env*)",
+      "Bash(tail *.env*)",
+      "Bash(grep * .env*)",
+      "Bash(source .env*)"
+    ]
+  },
+  "autoMode": {
+    "soft_deny": [
+      "$defaults",
+      "Editing, moving, or deleting any file or folder outside the project directory (/home/adwaith/dev/projects/finance-tracker) without the user's explicit permission in this conversation"
+    ],
+    "hard_deny": [
+      "$defaults",
+      "Creating git commits in this repository (git commit, git commit-tree, or any tool/alias that commits)",
+      "Reading, printing, or exfiltrating the contents of .env files (e.g. .env, .env.local, .env.production); .env.example is allowed"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-outside-edits.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}
