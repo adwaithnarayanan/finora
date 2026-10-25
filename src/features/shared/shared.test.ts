@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { FinanceValidationError } from "@/domain/finance";
 import { LedgerValidationError } from "@/domain/ledger";
@@ -6,7 +6,7 @@ import { INR, KNOWN_CURRENCIES, Money } from "@/domain/money";
 import { FinanceConflictError, FinanceNotFoundError } from "@/server/finance/errors";
 import { IdempotencyConflictError, LedgerIntegrityError } from "@/server/ledger/errors";
 
-import { toActionState } from "./errors";
+import { toActionState, toActionStateOrFallback } from "./errors";
 import { formEntries } from "./form-state";
 import { formatLedgerDate, formatMoney, todayInIndia } from "./format";
 
@@ -55,6 +55,35 @@ describe("toActionState", () => {
   it("rethrows unexpected errors to the error boundary", () => {
     const boom = new Error("connect ECONNREFUSED 127.0.0.1:5432");
     expect(() => toActionState(boom)).toThrow(boom);
+  });
+});
+
+describe("toActionStateOrFallback", () => {
+  it("keeps the friendly message for known errors and logs nothing", () => {
+    const log = vi.fn();
+    expect(toActionStateOrFallback(new FinanceConflictError("account-name-taken"), "Try again.", log).error).toMatch(
+      /already have an account/,
+    );
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("replaces unexpected errors with the fallback and logs them only on the server", () => {
+    const log = vi.fn();
+    const boom = new Error('duplicate key value violates unique constraint "categories_owner_kind_name_key"');
+    const state = toActionStateOrFallback(boom, "Nothing was changed. Try again.", log);
+    expect(state).toEqual({ error: "Nothing was changed. Try again." });
+    expect(JSON.stringify(state)).not.toMatch(/constraint|categories_|duplicate key/);
+    expect(log).toHaveBeenCalledWith(boom);
+  });
+
+  it("logs to the server console by default", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(toActionStateOrFallback(new Error("boom"), "Try again.")).toEqual({ error: "Try again." });
+      expect(spy).toHaveBeenCalledOnce();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

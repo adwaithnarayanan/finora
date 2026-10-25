@@ -62,5 +62,32 @@ SELECT has_table_privilege('finora_app', 'finora.journal_lines', 'UPDATE'),
        has_table_privilege('finora_app', 'finora.journal_entries', 'DELETE');          -- false, false
 ```
 
+Case-insensitive account-name index (Prisma cannot model it, so drift checks
+cannot see it). Read-only: the transaction is `READ ONLY` and rolled back.
+`${…%%\?*}` drops `?schema=finora`, which `psql` rejects:
+
+```bash
+{ echo 'BEGIN READ ONLY; SET LOCAL search_path = pg_catalog;'
+  cat scripts/db/sql/verify-account-name-index.sql
+  echo 'ROLLBACK;'; } | psql "${MIGRATION_DATABASE_URL%%\?*}" -X -x -v ON_ERROR_STOP=1
+# Expect one record with every column t (ok = t) and
+# definition = CREATE UNIQUE INDEX financial_accounts_owner_name_ci_key
+#              ON finora.financial_accounts USING btree (owner_id, lower(name))
+```
+
+The same query runs in the integration suite
+(`tests/integration/finance-database.test.ts`). If `ok` is false, do not edit
+the index by hand. Find which column is false and compare with migration
+`20261025000400`.
+
+Database locale, which decides what `lower()` treats as the same name (see
+ADR 0006, "Unicode letter case"). Record the result and compare it with the
+local stack (ICU, `en-US`):
+
+```sql
+SELECT current_setting('server_version') AS version, datlocprovider, datcollate, datctype
+  FROM pg_database WHERE datname = current_database();
+```
+
 Then work through the manual checklist in `docs/runbooks/owner-access.md`
 section 6.

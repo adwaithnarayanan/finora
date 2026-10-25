@@ -18,7 +18,8 @@ import {
 import { linkSimulatedGoogleIdentity, randomGoogleId } from "../support/google-simulation";
 
 import { adminClient, deleteOwners } from "./support/db";
-import { createMigratedScratchDatabase } from "./support/scratch-db";
+import { type CleanupStep, runCleanup } from "./support/cleanup";
+import { type ScratchDatabase, createMigratedScratchDatabase } from "./support/scratch-db";
 
 /**
  * The operator provisioning workflow against the real local Auth server and
@@ -37,7 +38,7 @@ const adminAuth = createClient(local.apiUrl, local.secretKey, {
 }).auth.admin;
 let db: pg.Client;
 let authDb: pg.Client;
-let dropScratch: () => Promise<void>;
+let scratch: ScratchDatabase | undefined;
 const emails: string[] = [];
 const ownerIds: string[] = [];
 
@@ -68,7 +69,8 @@ async function ownerCount() {
 
 beforeAll(async () => {
   authDb = await adminClient();
-  ({ client: db, drop: dropScratch } = await createMigratedScratchDatabase("finora_itest_provisioning"));
+  scratch = await createMigratedScratchDatabase("provisioning");
+  db = scratch.client;
   if ((await ownerCount()) > 0) throw new Error("the scratch database must start without owners");
 });
 
@@ -83,12 +85,22 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  for (const email of emails) {
-    const user = await userByEmail(email);
-    if (user) await adminAuth.deleteUser(user.id);
-  }
-  await dropScratch?.();
-  await authDb?.end();
+  // Every step runs even if an earlier one fails; all failures are reported.
+  await runCleanup([
+    ...emails.map(
+      (email): CleanupStep => [
+        `delete Auth user ${email}`,
+        async () => {
+          const user = await userByEmail(email);
+          if (!user) return;
+          const { error } = await adminAuth.deleteUser(user.id);
+          if (error) throw new Error(`Supabase Auth refused (${error.code ?? error.status})`);
+        },
+      ],
+    ),
+    ["drop the scratch database", async () => scratch?.drop()],
+    ["close the Auth database connection", async () => authDb?.end()],
+  ]);
 });
 
 /** Finora data in the scratch database. */

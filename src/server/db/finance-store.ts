@@ -159,11 +159,14 @@ export class PrismaFinanceStore implements FinanceStore {
 
   async accountNameTaken(name: string, exceptId?: string): Promise<boolean> {
     // Same comparison as the financial_accounts_owner_name_ci_key index
-    // (lower(name)); not ILIKE, where "_" and "%" would act as wildcards.
+    // ((owner_id, lower(name))); not ILIKE, where "_" and "%" would act as
+    // wildcards. The explicit owner filter is in addition to RLS, not instead.
     const rows = await this.tx.$queryRaw<{ taken: boolean }[]>`
       SELECT EXISTS (
         SELECT 1 FROM finora.financial_accounts
-         WHERE lower(name) = lower(${name}) AND id IS DISTINCT FROM ${exceptId ?? null}::uuid
+         WHERE owner_id = ${this.ownerId}::uuid
+           AND lower(name) = lower(${name})
+           AND id IS DISTINCT FROM ${exceptId ?? null}::uuid
       ) AS taken`;
     return rows[0]?.taken === true;
   }

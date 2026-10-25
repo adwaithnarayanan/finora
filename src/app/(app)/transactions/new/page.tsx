@@ -44,35 +44,54 @@ async function NewTransaction({ searchParams }: Pick<PageProps<"/transactions/ne
     );
   }
   const active = categories.filter((c) => c.archivedAt === null);
-  const type = params.type === "income" || params.type === "transfer" ? params.type : "expense";
-  const missing = (["income", "expense"] as const).filter((kind) => !active.some((c) => c.kind === kind));
+  const usable = (kind: "income" | "expense") => active.some((c) => c.kind === kind);
+  const missing = (["income", "expense"] as const).filter((kind) => !usable(kind));
+  // An explicit ?type= wins; otherwise start on a kind that can be recorded.
+  const type =
+    params.type === "income" || params.type === "transfer" || params.type === "expense"
+      ? params.type
+      : usable("expense")
+        ? "expense"
+        : usable("income")
+          ? "income"
+          : "transfer";
   return (
     <div className="grid gap-6">
-      {missing.length > 0 ? (
-        <div role="status" className="grid gap-3 rounded-lg border bg-muted/40 p-4 text-sm">
+      {categories.length === 0 ? (
+        <section aria-labelledby="no-categories" className="grid gap-3 rounded-lg border bg-muted/40 p-4 text-sm">
+          <h2 id="no-categories" className="font-medium">
+            No categories yet
+          </h2>
           <p>
-            You have no active {missing.join(" or ")} categories, so only{" "}
-            {missing.length === 2 ? "transfers" : `${missing[0] === "income" ? "expenses" : "income"} and transfers`} can be
-            recorded.{" "}
+            Income and expenses each need a category; transfers between your accounts don&apos;t. Add the default set
+            (Salary, Groceries, Rent and more) to start right away, or create your own on the{" "}
             <Link href="/categories" className="underline underline-offset-4">
-              Manage categories
-            </Link>
-            {categories.length === 0 ? " or add the defaults." : "."}
+              Categories
+            </Link>{" "}
+            page. You can rename or archive any of them later.
           </p>
-          {categories.length === 0 ? (
-            <div>
-              <DefaultCategoriesButton returnTo="/transactions/new" />
-            </div>
-          ) : null}
-        </div>
+          <DefaultCategoriesButton returnTo="/transactions/new" />
+        </section>
+      ) : missing.length > 0 ? (
+        <p role="status" className="rounded-lg border bg-muted/40 p-4 text-sm">
+          You have no active {missing.join(" or ")} categories, so {missing.length === 2 ? "income and expenses" : missing[0] === "income" ? "income" : "expenses"}{" "}
+          can&apos;t be recorded yet. Add or restore one on the{" "}
+          <Link href="/categories" className="underline underline-offset-4">
+            Categories
+          </Link>{" "}
+          page.
+        </p>
       ) : null}
       <TransactionForm
-      idempotencyKey={randomUUID()}
-      today={todayInIndia()}
-      initialKind={type}
-      accounts={options}
-      incomeCategories={active.filter((c) => c.kind === "income").map((c) => ({ id: c.id, label: c.name }))}
-      expenseCategories={active.filter((c) => c.kind === "expense").map((c) => ({ id: c.id, label: c.name }))}
+        // Remount when the starting kind changes (e.g. after adding the
+        // default categories), since the form keeps its kind in state.
+        key={type}
+        idempotencyKey={randomUUID()}
+        today={todayInIndia()}
+        initialKind={type}
+        accounts={options}
+        incomeCategories={active.filter((c) => c.kind === "income").map((c) => ({ id: c.id, label: c.name }))}
+        expenseCategories={active.filter((c) => c.kind === "expense").map((c) => ({ id: c.id, label: c.name }))}
       />
     </div>
   );

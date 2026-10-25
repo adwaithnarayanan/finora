@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 import { requireOwner } from "@/server/auth/session";
 import { finance } from "@/server/finance";
 
-import { toActionState } from "../shared/errors";
+import { toActionState, toActionStateOrFallback } from "../shared/errors";
 import { type ActionState, formEntries } from "../shared/form-state";
 
 export async function createCategoryAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
@@ -35,15 +35,22 @@ export async function renameCategoryAction(_prev: ActionState, formData: FormDat
 
 /**
  * Explicit setup of the default categories for the signed-in owner (a POST
- * from a button; never run while rendering a page). Idempotent.
+ * from a button; never run while rendering a page). Idempotent. A failure is
+ * shown next to the button without internal detail; it changes nothing,
+ * because the setup is one transaction.
  */
-export async function initializeDefaultCategoriesAction(formData: FormData): Promise<void> {
+export async function initializeDefaultCategoriesAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const owner = await requireOwner();
-  await finance.initializeDefaultCategories(owner);
+  try {
+    await finance.initializeDefaultCategories(owner);
+  } catch (error) {
+    return toActionStateOrFallback(error, "The default categories could not be added, so nothing was changed. Try again.");
+  }
   revalidatePath("/categories");
   revalidatePath("/transactions/new");
-  const back = formData.get("returnTo");
-  if (back === "/transactions/new") redirect(back);
+  // Outside the try: redirect() throws a control-flow exception.
+  if (formData.get("returnTo") === "/transactions/new") redirect("/transactions/new");
+  return { message: "Default categories added." };
 }
 
 export async function setCategoryArchivedAction(formData: FormData): Promise<void> {

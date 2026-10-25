@@ -5,8 +5,11 @@ import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 
 import { DEFAULT_CATEGORIES, FinanceValidationError } from "@/domain/finance";
 import { parseLedgerDate } from "@/domain/ledger";
+import type { OwnerId } from "@/domain/owner";
 import type { AuthorizedOwner } from "@/server/auth/types";
 import { createPrismaClient } from "@/server/db/client";
+import { PrismaFinanceStore } from "@/server/db/finance-store";
+import { runInOwnerScope } from "@/server/db/scope";
 import { FinanceConflictError, FinanceNotFoundError } from "@/server/finance/errors";
 import type { FinanceStore } from "@/server/finance/store";
 import { IdempotencyConflictError, LedgerIntegrityError } from "@/server/ledger/errors";
@@ -618,6 +621,17 @@ describe("account names are unique per owner regardless of letter case", () => {
     });
     // Renaming an account to a new case of its own name is fine.
     await finance.updateAccount(ownerA, other.id, { name: "OTHER savings", type: "bank" });
+  });
+
+  it("filters the name check by the store's owner explicitly, not only through RLS", async () => {
+    await account(ownerA, "Owner Filter Probe");
+    // RLS context is owner A (whose account it is); only the store's owner differs.
+    const taken = (storeOwner: AuthorizedOwner) =>
+      runInOwnerScope(prisma, ownerA, (tx) =>
+        new PrismaFinanceStore(tx, storeOwner.ownerId as OwnerId).accountNameTaken("owner filter PROBE"),
+      );
+    expect(await taken(ownerA)).toBe(true);
+    expect(await taken(ownerB)).toBe(false);
   });
 
   it("lets different owners use the same name", async () => {

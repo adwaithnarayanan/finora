@@ -17,7 +17,10 @@ export interface CategoryRef {
   readonly archived: boolean;
 }
 
-/** Created for an owner the first time they record a transaction. Editable afterwards. */
+/**
+ * Offered to an owner who has no categories yet; created only when the owner
+ * explicitly asks for them (never while rendering a page). Editable afterwards.
+ */
 export const DEFAULT_CATEGORIES: readonly { readonly name: string; readonly kind: CategoryKind }[] = [
   { name: "Salary", kind: "income" },
   { name: "Interest", kind: "income" },

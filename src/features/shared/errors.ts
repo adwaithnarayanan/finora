@@ -27,3 +27,21 @@ export function toActionState(error: unknown): ActionState {
   if (error instanceof FinanceError || error instanceof LedgerError) return { error: error.message };
   throw error;
 }
+
+/**
+ * For actions with no form to lose (a single button): like `toActionState`,
+ * but an unexpected failure becomes the generic `fallback` message instead of
+ * reaching the error boundary. Its details go to the server log only.
+ */
+export function toActionStateOrFallback(
+  error: unknown,
+  fallback: string,
+  log: (error: unknown) => void = (e) => console.error("finora: server action failed", e),
+): ActionState {
+  try {
+    return toActionState(error);
+  } catch {
+    log(error);
+    return { error: fallback };
+  }
+}

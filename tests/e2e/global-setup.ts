@@ -6,9 +6,10 @@ import { createClient } from "@supabase/supabase-js";
 import pg from "pg";
 
 import { readLocalSupabase } from "../../scripts/lib/local-supabase.mjs";
-import { APPROVED_PASSWORD_EMAIL_KEY, complete, prepare, setPassword } from "../../scripts/lib/provisioning.mjs";
+import { APPROVED_PASSWORD_EMAIL_KEY } from "../../scripts/lib/provisioning.mjs";
 
 import { type E2EUsers, USERS_FILE } from "./support/fixtures";
+import { provisionOwner } from "./support/owners";
 
 /**
  * Creates the LOCAL users for this run. Owners go through the real
@@ -25,13 +26,7 @@ export default async function globalSetup() {
   const password = () => `E2e-${randomUUID()}-Aa1`;
   const ctx = { admin, db };
 
-  async function owner(label: string) {
-    const user = { email: email(label), password: password() };
-    const { userId } = await prepare({ ...ctx, email: user.email, purpose: "additional-owner" });
-    await setPassword({ ...ctx, email: user.email, password: user.password });
-    const { ownerId } = await complete({ ...ctx, email: user.email, allowAdditional: true });
-    return { ...user, userId, ownerId: ownerId as string };
-  }
+  const owner = (label: string) => provisionOwner(ctx, label);
 
   async function plainUser(label: string, confirmed = true) {
     const user = { email: email(label), password: password() };

@@ -263,6 +263,75 @@ describe("owner isolation (RLS and composite keys)", () => {
   });
 });
 
+describe("case-insensitive account-name index: catalog definition", () => {
+  // The same read-only query the hosted runbook uses after a deployment.
+  const VERIFY_SQL = readFileSync(path.join(process.cwd(), "scripts/db/sql/verify-account-name-index.sql"), "utf8");
+  type Verification = {
+    present: boolean;
+    on_expected_table: boolean;
+    is_unique: boolean;
+    is_valid_and_ready: boolean;
+    keys_are_owner_id_and_lower_name: boolean;
+    definition_matches: boolean;
+    definition: string | null;
+    ok: boolean;
+  };
+
+  /** Runs the check in a transaction that is always rolled back, after `setup` (if any). */
+  async function verify(setup?: string): Promise<Verification> {
+    await admin.query("BEGIN");
+    try {
+      if (setup) await admin.query(setup);
+      await admin.query("SET LOCAL search_path = pg_catalog");
+      const { rows } = await admin.query<Verification>(VERIFY_SQL);
+      expect(rows).toHaveLength(1);
+      return rows[0]!;
+    } finally {
+      await admin.query("ROLLBACK");
+    }
+  }
+
+  it("is unique on (owner_id, lower(name)) of finora.financial_accounts, valid and ready", async () => {
+    expect(await verify()).toEqual({
+      present: true,
+      on_expected_table: true,
+      is_unique: true,
+      is_valid_and_ready: true,
+      keys_are_owner_id_and_lower_name: true,
+      definition_matches: true,
+      definition:
+        "CREATE UNIQUE INDEX financial_accounts_owner_name_ci_key ON finora.financial_accounts USING btree (owner_id, lower(name))",
+      ok: true,
+    });
+  });
+
+  const replace = (create: string) =>
+    `DROP INDEX finora.financial_accounts_owner_name_ci_key; CREATE ${create.replace("$IDX", "financial_accounts_owner_name_ci_key")}`;
+
+  // Each variant must keep existing data valid (they are built over real rows),
+  // so none is stricter than the real index. `failing` must be false; so must ok.
+  it.each([
+    ["missing", "DROP INDEX finora.financial_accounts_owner_name_ci_key", "present"],
+    ["case-sensitive", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, name)"), "keys_are_owner_id_and_lower_name"],
+    ["not unique", replace("INDEX $IDX ON finora.financial_accounts (owner_id, lower(name))"), "is_unique"],
+    ["keys swapped", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (lower(name), owner_id)"), "keys_are_owner_id_and_lower_name"],
+    ["upper() instead of lower()", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, upper(name))"), "keys_are_owner_id_and_lower_name"],
+    ["partial", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, lower(name)) WHERE archived_at IS NULL"), "keys_are_owner_id_and_lower_name"],
+    ["extra key column", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, lower(name), type)"), "keys_are_owner_id_and_lower_name"],
+    ["INCLUDE column", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, lower(name)) INCLUDE (type)"), "keys_are_owner_id_and_lower_name"],
+    ["different collation", replace(`UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, lower(name COLLATE "C"))`), "definition_matches"],
+    ["on another table", replace("INDEX $IDX ON finora.categories (owner_id, lower(name))"), "on_expected_table"],
+  ] as const)("detects a materially different index: %s", async (_label, setup, failing) => {
+    const result = await verify(setup);
+    expect(result[failing]).toBe(false);
+    expect(result.ok).toBe(false);
+  });
+
+  it("is restored after the variants (each ran in a rolled-back transaction)", async () => {
+    expect((await verify()).ok).toBe(true);
+  });
+});
+
 describe("case-insensitive account-name index", () => {
   it("rejects a case variant even for the migration role", async () => {
     await expect(

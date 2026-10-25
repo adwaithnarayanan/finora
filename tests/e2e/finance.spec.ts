@@ -4,8 +4,9 @@ import pg from "pg";
 
 import { readLocalSupabase } from "../../scripts/lib/local-supabase.mjs";
 
-import { e2eUsers } from "./support/fixtures";
+import { type ProvisionedOwner, e2eUsers } from "./support/fixtures";
 import { signIn } from "./support/login";
+import { provisionTestOwner } from "./support/owners";
 
 const users = e2eUsers();
 
@@ -26,6 +27,17 @@ async function categoryCount(ownerId: string): Promise<number> {
   } finally {
     await db.end();
   }
+}
+
+/**
+ * Adds the default categories through the owner-facing button (the supported,
+ * explicit setup). The caller's owner is new, so it has none yet.
+ */
+async function addDefaultCategories(page: Page) {
+  await page.goto("/categories");
+  await page.getByRole("button", { name: "Add default categories" }).click();
+  await expect(page.getByRole("region", { name: "Income categories" })).toContainText("Salary");
+  await expect(page.getByRole("region", { name: "Expense categories" })).toContainText("Groceries");
 }
 
 const balanceOn = (page: Page) => page.getByText("Posted balance").locator("xpath=following-sibling::p[1]");
@@ -62,8 +74,16 @@ test.describe("unauthorised access", () => {
 });
 
 test.describe("accounts and transactions (owner)", () => {
+  // These tests build on each other (serial). Each attempt, including a
+  // retry, starts from a brand-new owner, so nothing from an earlier attempt
+  // or another spec is assumed.
+  let owner: ProvisionedOwner;
+  test.beforeAll(async () => {
+    owner = await provisionTestOwner("finance");
+  });
+
   test.beforeEach(async ({ page }) => {
-    await signIn(page, users.owner.email, users.owner.password);
+    await signIn(page, owner.email, owner.password);
     await expect(page).toHaveURL(/\/$/);
   });
 
@@ -103,26 +123,8 @@ test.describe("accounts and transactions (owner)", () => {
     await expect(page.locator("form").getByRole("alert")).toHaveText("You already have an account with that name");
   });
 
-  test("viewing pages creates no categories; defaults are added only on request", async ({ page }) => {
-    const ownerId = users.owner.ownerId;
-    expect(await categoryCount(ownerId)).toBe(0);
-    await page.goto("/transactions/new");
-    await expect(page.getByText(/no active income or expense categories/)).toBeVisible();
-    await page.goto("/categories");
-    await expect(page.getByText("No categories yet")).toBeVisible();
-    await page.reload();
-    expect(await categoryCount(ownerId)).toBe(0);
-
-    await page.getByRole("button", { name: "Add default categories" }).click();
-    await expect(page.getByRole("region", { name: "Income categories" })).toContainText("Salary");
-    const created = await categoryCount(ownerId);
-    expect(created).toBeGreaterThan(0);
-    await page.goto("/transactions/new");
-    await page.goto("/categories");
-    expect(await categoryCount(ownerId)).toBe(created);
-  });
-
   test("record income, an expense and a transfer", async ({ page }) => {
+    await addDefaultCategories(page);
     await record(page, async (p) => {
       await p.getByLabel(/^Income/).check();
       await choose(p.getByLabel("Received into", { exact: true }), "HDFC Savings");
@@ -237,5 +239,53 @@ test.describe("accounts and transactions (owner)", () => {
     await page.getByRole("button", { name: "Correct opening balance" }).click();
     await expect(page.getByText("₹55,000.00 as of 1 Oct 2026")).toBeVisible();
     await expect(balanceOn(page)).toHaveText("₹78,000.50");
+  });
+});
+
+test.describe("default categories (a brand-new owner)", () => {
+  let owner: ProvisionedOwner;
+  test.beforeAll(async () => {
+    owner = await provisionTestOwner("categories");
+  });
+
+  test.beforeEach(async ({ page }) => {
+    await signIn(page, owner.email, owner.password);
+    await expect(page).toHaveURL(/\/$/);
+  });
+
+  test("viewing pages creates no categories; defaults are added only on request", async ({ page }) => {
+    expect(await categoryCount(owner.ownerId)).toBe(0);
+    // An account, so /transactions/new shows the form (and the category notice).
+    await page.goto("/accounts/new");
+    await page.getByLabel("Account name").fill("Categories probe");
+    await page.getByRole("button", { name: "Create account" }).click();
+    await expect(page.getByRole("heading", { level: 1, name: /Categories probe/ })).toBeVisible();
+
+    for (const path of ["/", "/accounts", "/transactions"]) await page.goto(path);
+    await page.goto("/transactions/new");
+    const notice = page.getByRole("region", { name: "No categories yet" });
+    await expect(notice).toContainText(/Add the default set/);
+    await expect(notice.getByRole("link", { name: "Categories" })).toHaveAttribute("href", "/categories");
+    await expect(page.getByLabel(/^Transfer/)).toBeChecked(); // the only kind that can be recorded yet
+    await page.goto("/categories");
+    await expect(page.getByText("No categories yet")).toBeVisible();
+    await page.reload();
+    expect(await categoryCount(owner.ownerId)).toBe(0);
+
+    // The explicit action, from the transaction page: back to the form, now usable.
+    await page.goto("/transactions/new");
+    await notice.getByRole("button", { name: "Add default categories" }).click();
+    await expect(page).toHaveURL(/\/transactions\/new$/);
+    await expect(notice).toHaveCount(0);
+    await expect(page.getByLabel(/^Expense/)).toBeChecked();
+    await expect(page.getByLabel("Category", { exact: true }).locator("option", { hasText: "Groceries" })).toHaveCount(1);
+    const created = await categoryCount(owner.ownerId);
+    expect(created).toBeGreaterThan(0);
+
+    await page.goto("/categories");
+    await expect(page.getByRole("region", { name: "Income categories" })).toContainText("Salary");
+    await expect(page.getByRole("button", { name: "Add default categories" })).toHaveCount(0);
+    await page.goto("/transactions/new");
+    expect(await categoryCount(owner.ownerId)).toBe(created);
   });
 });
