@@ -1,13 +1,24 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const PORT = Number(process.env.PORT ?? 3100);
-const baseURL = `http://127.0.0.1:${PORT}`;
+import { localAppEnv, readLocalSupabase } from "./scripts/lib/local-supabase.mjs";
 
-/** Smoke tests run against a production build (`npm run build` first). */
+const PORT = Number(process.env.PORT ?? 3100);
+const baseURL = `http://localhost:${PORT}`;
+
+/**
+ * End-to-end tests run a production build (`npm run build` first) against the
+ * LOCAL Supabase stack. Connection details come from `supabase status`; the
+ * server's environment is set explicitly here, so .env files are not needed.
+ */
+const local = readLocalSupabase();
+
 export default defineConfig({
   testDir: "./tests/e2e",
+  globalSetup: "./tests/e2e/global-setup.ts",
+  globalTeardown: "./tests/e2e/global-teardown.ts",
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
+  workers: 1,
   reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
   use: {
     baseURL,
@@ -15,12 +26,17 @@ export default defineConfig({
   },
   projects: [
     { name: "desktop-chromium", use: { ...devices["Desktop Chrome"] } },
-    { name: "mobile-chromium", use: { ...devices["Pixel 7"] } },
+    {
+      name: "mobile-chromium",
+      use: { ...devices["Pixel 7"] },
+      testMatch: /layout\.spec\.ts/,
+    },
   ],
   webServer: {
-    command: `npm run start -- --port ${PORT} --hostname 127.0.0.1`,
-    url: baseURL,
-    reuseExistingServer: !process.env.CI,
+    command: `npm run start -- --port ${PORT} --hostname localhost`,
+    url: `${baseURL}/login`,
+    reuseExistingServer: false,
     timeout: 120_000,
+    env: { ...localAppEnv(local, baseURL), NODE_ENV: "production" },
   },
 });

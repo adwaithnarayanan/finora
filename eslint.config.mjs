@@ -23,6 +23,7 @@ export const domainBoundaryRule = {
               "react-dom/*",
               "@prisma/*",
               "prisma",
+              "pg",
               "@supabase/*",
               "node:*",
             ],
@@ -67,11 +68,63 @@ export const domainBoundaryRule = {
   },
 };
 
+const prismaInternals = {
+  group: [
+    "@prisma/*",
+    "pg",
+    "@/server/db/client",
+    "@/server/db/scope",
+    "@/server/db/owner-directory",
+    "@/server/db/ledger-store",
+    "@/server/db/generated",
+    "@/server/db/generated/**",
+    "**/db/generated",
+    "**/db/generated/**",
+  ],
+  message:
+    "Use the scoped helpers from @/server/db; the Prisma client stays inside src/server/db (docs/adr/0004).",
+};
+
+const supabaseSdk = {
+  group: ["@supabase/*"],
+  message:
+    "Supabase SDKs are confined to src/server/auth/supabase and src/proxy.ts (docs/adr/0003).",
+};
+
+/**
+ * Infrastructure boundaries outside the domain layer. Exported for tests.
+ * Later configs override earlier ones per file, so the domain rule comes last.
+ */
+export const infrastructureBoundaryRules = [
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/server/db/**", "src/server/auth/supabase/**", "src/proxy.ts", "src/domain/**"],
+    rules: {
+      "no-restricted-imports": ["error", { patterns: [prismaInternals, supabaseSdk] }],
+    },
+  },
+  {
+    files: ["src/server/auth/supabase/**/*.{ts,tsx}", "src/proxy.ts"],
+    rules: {
+      "no-restricted-imports": ["error", { patterns: [prismaInternals] }],
+    },
+  },
+  {
+    files: ["src/server/db/**/*.{ts,tsx}"],
+    ignores: ["src/server/db/generated/**"],
+    rules: {
+      "no-restricted-imports": ["error", { patterns: [supabaseSdk] }],
+    },
+  },
+];
+
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
+  ...infrastructureBoundaryRules,
   domainBoundaryRule,
   globalIgnores([
+    "src/server/db/generated/**",
     ".next/**",
     "out/**",
     "build/**",

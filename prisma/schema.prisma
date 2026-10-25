@@ -1,0 +1,176 @@
+// Finora database schema. Application tables live in the `finora` Postgres
+// schema, which is not exposed through the Supabase Data API.
+// Security-relevant SQL (roles, grants, RLS, CHECK constraints, triggers) is in
+// the migrations themselves; see docs/adr/0004-database-roles-and-rls.md.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/server/db/generated"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["finora"]
+}
+
+/// An application owner. `id` is Finora's own identifier and is never the
+/// auth provider's user id. Future owner-scoped tables reference it.
+model Owner {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime        @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// Non-null revokes access without deleting the owner's data.
+  disabledAt     DateTime?       @map("disabled_at") @db.Timestamptz(6)
+  identities     OwnerIdentity[]
+  ledgerAccounts LedgerAccount[]
+  journalEntries JournalEntry[]
+
+  @@map("owners")
+  @@schema("finora")
+}
+
+/// Maps an external identity (provider + provider-issued subject) to an owner.
+model OwnerIdentity {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId   String   @map("owner_id") @db.Uuid
+  /// Stable provider key, e.g. "supabase".
+  provider  String
+  /// Provider-issued user id (Supabase: auth.users.id / JWT `sub`).
+  subject   String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  owner     Owner    @relation(fields: [ownerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([provider, subject], map: "owner_identities_provider_subject_key")
+  @@unique([ownerId, provider], map: "owner_identities_owner_provider_key")
+  @@map("owner_identities")
+  @@schema("finora")
+}
+
+// ---------------------------------------------------------------------------
+// Double-entry ledger (docs/adr/0005-double-entry-ledger.md).
+// Invariants that span rows (balancing, immutability of posted history,
+// reversal mirroring) are enforced by triggers in the SQL migration.
+
+/// Reference data: currencies the ledger accepts, with their minor-unit
+/// exponent. Read-only to the application; amounts are stored in these units.
+model Currency {
+  code           String          @id @db.Char(3)
+  exponent       Int             @db.SmallInt
+  ledgerAccounts LedgerAccount[]
+
+  @@map("currencies")
+  @@schema("finora")
+}
+
+/// Accounting classification of a ledger account. Asset and expense accounts
+/// are debit-normal; liability, equity and income accounts are credit-normal.
+enum LedgerAccountKind {
+  asset
+  liability
+  equity
+  income
+  expense
+
+  @@map("ledger_account_kind")
+  @@schema("finora")
+}
+
+enum JournalEntryStatus {
+  draft
+  posted
+
+  @@map("journal_entry_status")
+  @@schema("finora")
+}
+
+enum JournalLineSide {
+  debit
+  credit
+
+  @@map("journal_line_side")
+  @@schema("finora")
+}
+
+/// An accounting primitive (not a user-facing bank account). Single-currency.
+model LedgerAccount {
+  id           String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId      String            @map("owner_id") @db.Uuid
+  name         String
+  kind         LedgerAccountKind
+  currencyCode String            @map("currency_code") @db.Char(3)
+  createdAt    DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime          @default(now()) @map("updated_at") @db.Timestamptz(6)
+  owner        Owner             @relation(fields: [ownerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  currency     Currency          @relation(fields: [currencyCode], references: [code], onDelete: Restrict, onUpdate: Restrict)
+  lines        JournalLine[]
+
+  /// Target of the composite foreign key from journal lines: a line can only
+  /// reference an account of the same owner and in the same currency.
+  @@unique([id, ownerId, currencyCode], map: "ledger_accounts_id_owner_currency_key")
+  @@unique([ownerId, name], map: "ledger_accounts_owner_name_key")
+  @@map("ledger_accounts")
+  @@schema("finora")
+}
+
+model JournalEntry {
+  id                     String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId                String             @map("owner_id") @db.Uuid
+  status                 JournalEntryStatus @default(draft)
+  /// Accounting (effective) date of the entry.
+  entryDate              DateTime           @map("entry_date") @db.Date
+  description            String
+  /// Client-chosen retry key, unique per owner. Null for entries created
+  /// without one (e.g. the replacement half of a correction).
+  idempotencyKey         String?            @map("idempotency_key")
+  /// SHA-256 of the canonical request that used `idempotencyKey`.
+  idempotencyFingerprint String?            @map("idempotency_fingerprint") @db.Char(64)
+  /// Set on a reversal: the posted entry whose effect this entry cancels.
+  reversesEntryId        String?            @map("reverses_entry_id") @db.Uuid
+  /// Set on a replacement: the reversed entry this entry supersedes.
+  replacesEntryId        String?            @map("replaces_entry_id") @db.Uuid
+  createdAt              DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime           @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// Database time of the draft -> posted transition (set by trigger).
+  postedAt               DateTime?          @map("posted_at") @db.Timestamptz(6)
+  owner                  Owner              @relation(fields: [ownerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  reverses               JournalEntry?      @relation("Reversal", fields: [reversesEntryId, ownerId], references: [id, ownerId], onDelete: Restrict, onUpdate: Restrict, map: "journal_entries_reverses_entry_fkey")
+  reversedBy             JournalEntry?      @relation("Reversal")
+  replaces               JournalEntry?      @relation("Replacement", fields: [replacesEntryId, ownerId], references: [id, ownerId], onDelete: Restrict, onUpdate: Restrict, map: "journal_entries_replaces_entry_fkey")
+  replacedBy             JournalEntry?      @relation("Replacement")
+  lines                  JournalLine[]
+
+  /// Target of composite foreign keys that keep references within one owner.
+  @@unique([id, ownerId], map: "journal_entries_id_owner_key")
+  @@unique([ownerId, idempotencyKey], map: "journal_entries_owner_idempotency_key")
+  /// An entry is reversed at most once and replaced at most once. (The
+  /// referenced id fixes the owner, so these are unique per entry.)
+  @@unique([reversesEntryId, ownerId], map: "journal_entries_reverses_entry_key")
+  @@unique([replacesEntryId, ownerId], map: "journal_entries_replaces_entry_key")
+  @@index([ownerId, entryDate], map: "journal_entries_owner_date_idx")
+  @@map("journal_entries")
+  @@schema("finora")
+}
+
+/// One side of an entry: a positive amount in the account's minor units.
+model JournalLine {
+  id           String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId      String          @map("owner_id") @db.Uuid
+  entryId      String          @map("entry_id") @db.Uuid
+  lineNo       Int             @map("line_no") @db.SmallInt
+  accountId    String          @map("account_id") @db.Uuid
+  currencyCode String          @map("currency_code") @db.Char(3)
+  side         JournalLineSide
+  amountMinor  BigInt          @map("amount_minor")
+  memo         String?
+  createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  entry        JournalEntry    @relation(fields: [entryId, ownerId], references: [id, ownerId], onDelete: Cascade, onUpdate: Restrict, map: "journal_lines_entry_fkey")
+  account      LedgerAccount   @relation(fields: [accountId, ownerId, currencyCode], references: [id, ownerId, currencyCode], onDelete: Restrict, onUpdate: Restrict, map: "journal_lines_account_fkey")
+
+  /// Includes owner_id so a unique violation can never reveal that another
+  /// owner's entry id exists (unique indexes ignore RLS).
+  @@unique([entryId, ownerId, lineNo], map: "journal_lines_entry_line_key")
+  @@index([accountId, ownerId, currencyCode], map: "journal_lines_account_idx")
+  @@map("journal_lines")
+  @@schema("finora")
+}

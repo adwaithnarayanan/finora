@@ -1,6 +1,9 @@
 # dependencies
 /node_modules
 
+# generated Prisma client (npm postinstall / prisma generate)
+/src/server/db/generated/
+
 # testing
 /coverage
 /test-results/

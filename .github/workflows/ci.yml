@@ -17,9 +17,39 @@ env:
 
 jobs:
   verify:
-    name: Lint, typecheck, test, build, e2e
+    name: Lint, typecheck, unit tests, build
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies (also generates the Prisma client)
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests with coverage
+        run: npm run test:coverage
+
+      - name: Production build (no secrets required)
+        run: npm run build
+
+  integration:
+    name: Database, auth and e2e (local Supabase)
+    runs-on: ubuntu-latest
+    needs: verify
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -33,14 +63,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint
-        run: npm run lint
+      # Ephemeral local stack inside the runner; no hosted project or secrets.
+      - name: Start local Supabase
+        run: npm run db:local:start
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Apply migrations
+        run: npm run db:local:setup
 
-      - name: Unit tests with coverage
-        run: npm run test:coverage
+      - name: Check migrations match the Prisma schema
+        run: npm run db:local:drift
+
+      - name: Integration tests (real Postgres + Supabase Auth)
+        run: npm run test:integration
 
       - name: Production build
         run: npm run build
@@ -48,7 +82,7 @@ jobs:
       - name: Install Playwright browser and system dependencies
         run: npx playwright install --with-deps chromium
 
-      - name: End-to-end smoke tests
+      - name: End-to-end tests
         run: npm run test:e2e
 
       - name: Upload Playwright report
@@ -58,3 +92,7 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
+
+      - name: Stop local Supabase
+        if: always()
+        run: npm run db:local:stop

@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
-import { getServerEnv } from "@/server/env";
+import { getSiteEnv } from "@/server/env";
 
 import "./globals.css";
 
@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL(getServerEnv().NEXT_PUBLIC_SITE_URL),
+  metadataBase: new URL(getSiteEnv().NEXT_PUBLIC_SITE_URL),
   title: {
     default: "Finora",
     template: "%s · Finora",
