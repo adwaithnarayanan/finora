@@ -1,4 +1,4 @@
-import type { CategoryKind, FinancialAccountType, RecordKind } from "@/domain/finance";
+import type { AccountName, CategoryKind, FinancialAccountType, RecordKind } from "@/domain/finance";
 import { type LedgerDate, parseLedgerDate } from "@/domain/ledger";
 import { type Currency, Money, defineCurrency } from "@/domain/money";
 import type { OwnerId } from "@/domain/owner";
@@ -17,8 +17,8 @@ import { sqlStates } from "@/server/ledger/database-errors";
 
 import type { ScopedTx } from "./scope";
 
-/** Unique indexes that mean "this account name is taken" (case-insensitive and exact). */
-const ACCOUNT_NAME_INDEXES = ["financial_accounts_owner_name_ci_key", "financial_accounts_owner_name_key"];
+/** The unique index that means "this account name is taken" (owner_id, name_key). */
+const ACCOUNT_NAME_INDEXES = ["financial_accounts_owner_name_key_key"];
 
 /**
  * True for a unique violation on one of `indexes`. Prisma's driver-adapter
@@ -157,23 +157,27 @@ export class PrismaFinanceStore implements FinanceStore {
     return row ? toAccount(row) : null;
   }
 
-  async accountNameTaken(name: string, exceptId?: string): Promise<boolean> {
-    // Same comparison as the financial_accounts_owner_name_ci_key index
-    // ((owner_id, lower(name))); not ILIKE, where "_" and "%" would act as
-    // wildcards. The explicit owner filter is in addition to RLS, not instead.
+  async accountNameTaken(name: AccountName, exceptId?: string): Promise<boolean> {
+    // Same comparison as the financial_accounts_owner_name_key_key index:
+    // byte equality of the application-computed key (the column is
+    // COLLATE "C"); the database never lower-cases it. The explicit owner
+    // filter is in addition to RLS, not instead.
     const rows = await this.tx.$queryRaw<{ taken: boolean }[]>`
       SELECT EXISTS (
         SELECT 1 FROM finora.financial_accounts
          WHERE owner_id = ${this.ownerId}::uuid
-           AND lower(name) = lower(${name})
+           AND name_key = ${name.key}
            AND id IS DISTINCT FROM ${exceptId ?? null}::uuid
       ) AS taken`;
     return rows[0]?.taken === true;
   }
 
-  async insertAccount(row: {
+  async insertAccount({
+    name,
+    ...row
+  }: {
     id: string;
-    name: string;
+    name: AccountName;
     type: FinancialAccountType;
     currencyCode: string;
     ledgerAccountId: string;
@@ -181,13 +185,21 @@ export class PrismaFinanceStore implements FinanceStore {
     creationFingerprint: string;
   }): Promise<FinancialAccountRecord> {
     const created = await withNameConflict(() =>
-      this.tx.financialAccount.create({ data: { ...row, ownerId: this.ownerId }, select: accountSelect }),
+      this.tx.financialAccount.create({
+        data: { ...row, name: name.display, nameKey: name.key, ownerId: this.ownerId },
+        select: accountSelect,
+      }),
     );
     return toAccount(created);
   }
 
-  async updateAccount(id: string, changes: { name: string; type: FinancialAccountType }): Promise<void> {
-    await withNameConflict(() => this.tx.financialAccount.updateMany({ where: { id }, data: changes }));
+  async updateAccount(id: string, changes: { name: AccountName; type: FinancialAccountType }): Promise<void> {
+    await withNameConflict(() =>
+      this.tx.financialAccount.updateMany({
+        where: { id },
+        data: { name: changes.name.display, nameKey: changes.name.key, type: changes.type },
+      }),
+    );
   }
 
   async setAccountArchived(id: string, archived: boolean): Promise<void> {

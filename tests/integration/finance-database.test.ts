@@ -263,15 +263,18 @@ describe("owner isolation (RLS and composite keys)", () => {
   });
 });
 
-describe("case-insensitive account-name index: catalog definition", () => {
+describe("account-name key index: catalog definition", () => {
   // The same read-only query the hosted runbook uses after a deployment.
-  const VERIFY_SQL = readFileSync(path.join(process.cwd(), "scripts/db/sql/verify-account-name-index.sql"), "utf8");
+  const VERIFY_SQL = readFileSync(path.join(process.cwd(), "scripts/db/sql/verify-account-name-key-index.sql"), "utf8");
   type Verification = {
     present: boolean;
     on_expected_table: boolean;
     is_unique: boolean;
     is_valid_and_ready: boolean;
-    keys_are_owner_id_and_lower_name: boolean;
+    keys_are_owner_id_and_name_key: boolean;
+    key_collation_is_c: boolean;
+    key_column_is_c_and_not_null: boolean;
+    no_other_name_index: boolean;
     definition_matches: boolean;
     definition: string | null;
     ok: boolean;
@@ -291,36 +294,43 @@ describe("case-insensitive account-name index: catalog definition", () => {
     }
   }
 
-  it("is unique on (owner_id, lower(name)) of finora.financial_accounts, valid and ready", async () => {
+  it('is unique on (owner_id, name_key COLLATE "C") of finora.financial_accounts, valid, and the only name index', async () => {
     expect(await verify()).toEqual({
       present: true,
       on_expected_table: true,
       is_unique: true,
       is_valid_and_ready: true,
-      keys_are_owner_id_and_lower_name: true,
+      keys_are_owner_id_and_name_key: true,
+      key_collation_is_c: true,
+      key_column_is_c_and_not_null: true,
+      no_other_name_index: true,
       definition_matches: true,
-      definition:
-        "CREATE UNIQUE INDEX financial_accounts_owner_name_ci_key ON finora.financial_accounts USING btree (owner_id, lower(name))",
+      definition: "CREATE UNIQUE INDEX financial_accounts_owner_name_key_key ON finora.financial_accounts USING btree (owner_id, name_key)",
       ok: true,
     });
   });
 
-  const replace = (create: string) =>
-    `DROP INDEX finora.financial_accounts_owner_name_ci_key; CREATE ${create.replace("$IDX", "financial_accounts_owner_name_ci_key")}`;
+  const IDX = "financial_accounts_owner_name_key_key";
+  const replace = (create: string) => `DROP INDEX finora.${IDX}; CREATE ${create.replace("$IDX", IDX)}`;
 
   // Each variant must keep existing data valid (they are built over real rows),
   // so none is stricter than the real index. `failing` must be false; so must ok.
   it.each([
-    ["missing", "DROP INDEX finora.financial_accounts_owner_name_ci_key", "present"],
-    ["case-sensitive", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, name)"), "keys_are_owner_id_and_lower_name"],
-    ["not unique", replace("INDEX $IDX ON finora.financial_accounts (owner_id, lower(name))"), "is_unique"],
-    ["keys swapped", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (lower(name), owner_id)"), "keys_are_owner_id_and_lower_name"],
-    ["upper() instead of lower()", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, upper(name))"), "keys_are_owner_id_and_lower_name"],
-    ["partial", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, lower(name)) WHERE archived_at IS NULL"), "keys_are_owner_id_and_lower_name"],
-    ["extra key column", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, lower(name), type)"), "keys_are_owner_id_and_lower_name"],
-    ["INCLUDE column", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, lower(name)) INCLUDE (type)"), "keys_are_owner_id_and_lower_name"],
-    ["different collation", replace(`UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, lower(name COLLATE "C"))`), "definition_matches"],
-    ["on another table", replace("INDEX $IDX ON finora.categories (owner_id, lower(name))"), "on_expected_table"],
+    ["missing", `DROP INDEX finora.${IDX}`, "present"],
+    ["not unique", replace("INDEX $IDX ON finora.financial_accounts (owner_id, name_key)"), "is_unique"],
+    ["keys swapped", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (name_key, owner_id)"), "keys_are_owner_id_and_name_key"],
+    ["on the name, not the key", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, name)"), "keys_are_owner_id_and_name_key"],
+    ["an expression over the key", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, lower(name_key))"), "keys_are_owner_id_and_name_key"],
+    ["partial", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, name_key) WHERE archived_at IS NULL"), "keys_are_owner_id_and_name_key"],
+    ["extra key column", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, name_key, type)"), "keys_are_owner_id_and_name_key"],
+    ["INCLUDE column", replace("UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, name_key) INCLUDE (type)"), "keys_are_owner_id_and_name_key"],
+    ["database-default collation", replace(`UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, name_key COLLATE "default")`), "key_collation_is_c"],
+    ["ICU collation", replace(`UNIQUE INDEX $IDX ON finora.financial_accounts (owner_id, name_key COLLATE "und-x-icu")`), "key_collation_is_c"],
+    ["key column not C", `ALTER TABLE finora.financial_accounts ALTER COLUMN name_key TYPE text COLLATE "default"`, "key_column_is_c_and_not_null"],
+    ["key column nullable", "ALTER TABLE finora.financial_accounts ALTER COLUMN name_key DROP NOT NULL", "key_column_is_c_and_not_null"],
+    ["the old lower(name) index back", "CREATE UNIQUE INDEX financial_accounts_owner_name_ci_key ON finora.financial_accounts (owner_id, lower(name))", "no_other_name_index"],
+    ["the old exact-name index back", "CREATE UNIQUE INDEX financial_accounts_owner_name_key ON finora.financial_accounts (owner_id, name)", "no_other_name_index"],
+    ["on another table", replace("INDEX $IDX ON finora.categories (owner_id, name)"), "on_expected_table"],
   ] as const)("detects a materially different index: %s", async (_label, setup, failing) => {
     const result = await verify(setup);
     expect(result[failing]).toBe(false);
@@ -332,62 +342,63 @@ describe("case-insensitive account-name index: catalog definition", () => {
   });
 });
 
-describe("case-insensitive account-name index", () => {
-  it("rejects a case variant even for the migration role", async () => {
-    await expect(
-      admin.query(
-        `INSERT INTO finora.financial_accounts (owner_id, name, type, currency_code, ledger_account_id, creation_key, creation_fingerprint)
-         SELECT owner_id, upper(name), type, currency_code, ledger_account_id, 'raw-dup', repeat('0', 64)
-           FROM finora.financial_accounts WHERE id = $1`,
-        [bankId],
-      ),
-    ).rejects.toThrow(/financial_accounts_owner_name_ci_key|financial_accounts_ledger_account_key/);
-    // Isolate the name rule: a fresh ledger account, same name in another case.
+describe("account-name key index", () => {
+  /** A fresh ledger account of `owner` and an insert of an account with `name`/`key` on it, as `client`. */
+  async function insertAccount(client: pg.Client, owner: string, name: string, key: string) {
+    const { rows } = await client.query(
+      "INSERT INTO finora.ledger_accounts (owner_id, name, kind, currency_code) VALUES ($1, $2, 'asset', 'INR') RETURNING id::text",
+      [owner, `itest:key-probe:${randomUUID()}`],
+    );
+    return client.query(
+      `INSERT INTO finora.financial_accounts (owner_id, name, name_key, type, currency_code, ledger_account_id, creation_key, creation_fingerprint)
+       VALUES ($1, $2, $3, 'bank', 'INR', $4, $5, repeat('0', 64))`,
+      [owner, name, key, rows[0].id, `raw-${randomUUID()}`],
+    );
+  }
+
+  it("rejects a duplicate key even when every application check is bypassed", async () => {
+    // As the runtime role (RLS applies) and as the migration role.
+    await expect(asOwner(app, a.ownerId, () => insertAccount(app, a.ownerId, "RAW BANK (raw sql)", "raw bank"))).rejects.toThrow(
+      /financial_accounts_owner_name_key_key/,
+    );
     await admin.query("BEGIN");
     try {
-      const { rows } = await admin.query(
-        "INSERT INTO finora.ledger_accounts (owner_id, name, kind, currency_code) VALUES ($1, 'itest:ci-probe', 'asset', 'INR') RETURNING id::text",
-        [a.ownerId],
-      );
-      await expect(
-        admin.query(
-          `INSERT INTO finora.financial_accounts (owner_id, name, type, currency_code, ledger_account_id, creation_key, creation_fingerprint)
-           VALUES ($1, 'RAW BANK', 'bank', 'INR', $2, 'raw-ci', repeat('0', 64))`,
-          [a.ownerId, rows[0].id],
-        ),
-      ).rejects.toThrow(/financial_accounts_owner_name_ci_key/);
+      await expect(insertAccount(admin, a.ownerId, "Anything", "raw bank")).rejects.toThrow(/financial_accounts_owner_name_key_key/);
     } finally {
       await admin.query("ROLLBACK");
     }
   });
 
-  it("the migration refuses to run, changing nothing, when existing names collide", async () => {
-    const migration = readFileSync(
-      path.join(process.cwd(), "prisma/migrations/20261025000400_account_name_case_insensitive/migration.sql"),
-      "utf8",
-    );
-    // Recreate the pre-migration state inside a transaction that is always rolled back.
+  it("compares keys byte for byte: no locale lower-casing or normalisation in the database", async () => {
     await admin.query("BEGIN");
     try {
-      await admin.query("DROP INDEX finora.financial_accounts_owner_name_ci_key");
-      const { rows } = await admin.query(
-        "INSERT INTO finora.ledger_accounts (owner_id, name, kind, currency_code) VALUES ($1, 'itest:ci-conflict', 'asset', 'INR') RETURNING id::text",
-        [a.ownerId],
-      );
-      await admin.query(
-        `INSERT INTO finora.financial_accounts (owner_id, name, type, currency_code, ledger_account_id, creation_key, creation_fingerprint)
-         VALUES ($1, 'RAW BANK', 'bank', 'INR', $2, 'raw-conflict', repeat('0', 64))`,
-        [a.ownerId, rows[0].id],
-      );
-      await admin.query("SAVEPOINT before_migration");
-      await expect(admin.query(migration)).rejects.toThrow(/1 group\(s\) of account names differ only by letter case/);
-      await admin.query("ROLLBACK TO SAVEPOINT before_migration");
-      const index = await admin.query("SELECT to_regclass('finora.financial_accounts_owner_name_ci_key') AS idx");
-      expect(index.rows[0].idx).toBeNull(); // nothing was created
+      // Each would equal "raw bank" under a case-insensitive or normalising comparison.
+      await insertAccount(admin, a.ownerId, "Raw Bank 1", "RAW BANK");
+      await insertAccount(admin, a.ownerId, "Raw Bank 2", "raw\u00a0bank");
+      const { rows } = await admin.query("SELECT count(*)::int AS n FROM finora.financial_accounts WHERE owner_id = $1 AND name_key = 'raw bank'", [a.ownerId]);
+      expect(rows[0].n).toBe(1);
     } finally {
       await admin.query("ROLLBACK");
     }
-    const restored = await admin.query("SELECT to_regclass('finora.financial_accounts_owner_name_ci_key')::text AS idx");
-    expect(restored.rows[0].idx).toBe("finora.financial_accounts_owner_name_ci_key");
+  });
+
+  it("lets another owner use the same key", async () => {
+    await admin.query("BEGIN");
+    try {
+      await expect(insertAccount(admin, b.ownerId, "Raw bank", "raw bank")).resolves.toBeDefined();
+    } finally {
+      await admin.query("ROLLBACK");
+    }
+  });
+
+  it("requires a non-empty key", async () => {
+    for (const key of [null, ""]) {
+      await admin.query("BEGIN");
+      try {
+        await expect(insertAccount(admin, a.ownerId, "Keyless", key as string)).rejects.toThrow(/name_key|financial_accounts_name_key_format/);
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+    }
   });
 });

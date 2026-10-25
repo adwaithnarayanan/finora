@@ -227,7 +227,11 @@ enum SystemLedgerPurpose {
 model FinancialAccount {
   id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   ownerId             String               @map("owner_id") @db.Uuid
+  /// Trimmed, Unicode NFC (ADR 0007).
   name                String
+  /// Comparison key, NFC(toLowerCase(name)), computed by the application.
+  /// The column is COLLATE "C" (migration 20261025000500; Prisma cannot express it).
+  nameKey             String               @map("name_key")
   type                FinancialAccountType
   /// Fixed at creation: it is the currency of the underlying ledger account.
   currencyCode        String               @map("currency_code") @db.Char(3)
@@ -248,7 +252,8 @@ model FinancialAccount {
   /// Target of transaction foreign keys: same owner and same currency.
   @@unique([id, ownerId, currencyCode], map: "financial_accounts_id_owner_currency_key")
   @@unique([ledgerAccountId, ownerId], map: "financial_accounts_ledger_account_key")
-  @@unique([ownerId, name], map: "financial_accounts_owner_name_key")
+  /// Names are unique per owner by comparison key, not by exact text.
+  @@unique([ownerId, nameKey], map: "financial_accounts_owner_name_key_key")
   @@unique([ownerId, creationKey], map: "financial_accounts_owner_creation_key")
   @@map("financial_accounts")
   @@schema("finora")

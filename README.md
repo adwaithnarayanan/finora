@@ -11,8 +11,10 @@ Architecture and decisions: [`docs/adr/`](docs/adr/). Operations:
 
 ## Requirements
 
-- Node.js 24 LTS (see `.nvmrc`). `npm install`/`npm ci` refuse other major
-  versions (`engine-strict` in `.npmrc`). With a version manager: `nvm use` or `fnm use`.
+- Node.js 24.22.1 exactly (see `.nvmrc`). `npm install`/`npm ci` refuse any
+  other version (`engine-strict` in `.npmrc`), and a unit test fails on one:
+  account-name comparison keys depend on Node's Unicode data (ADR 0007). With
+  a version manager: `nvm use` or `fnm use`.
 - npm. The committed `package-lock.json` is the source of truth.
 - Docker (for the local Supabase stack). The Supabase CLI is a pinned dev
   dependency; use it through `npx supabase` / the npm scripts.
@@ -152,6 +154,7 @@ npx vitest run --config vitest.integration.config.mts tests/integration/ledger-*
 | `npm run db:local:new -- <name>` | Create a migration from `schema.prisma` changes without applying it; review and add RLS (`finora.apply_owner_isolation`) and constraints by hand |
 | `npm run db:local:drift` | Fail if migrations and `schema.prisma` disagree (uses a throwaway shadow database) |
 | `npm run db:local:reset -- --yes` | **Deletes all local data**, then re-applies migrations |
+| `npm run db:account-names -- <conflicts\|verify> --local` | Read-only account-name checks with the app's own canonicalisation; prints ids, never names (ADR 0007) |
 | Studio | http://127.0.0.1:55323 (inspect tables) |
 
 Rules (catalog tests in `tests/integration/db-roles-and-grants.test.ts`

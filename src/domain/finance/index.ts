@@ -6,8 +6,10 @@ export {
   FINANCIAL_ACCOUNT_TYPES,
   type FinancialAccountType,
   accountLifecycle,
+  parseAccountName,
   parseAccountType,
 } from "./accounts";
+export { type AccountName, canonicalAccountName } from "./account-name";
 export { CATEGORY_KINDS, type CategoryKind, type CategoryRef, DEFAULT_CATEGORIES, parseCategoryKind } from "./categories";
 export { FinanceError, FinanceValidationError, type FieldIssue, IssueCollector } from "./errors";
 export {

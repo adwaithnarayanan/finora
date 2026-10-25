@@ -1,4 +1,4 @@
-import type { CategoryKind, FinancialAccountType, RecordKind } from "@/domain/finance";
+import type { AccountName, CategoryKind, FinancialAccountType, RecordKind } from "@/domain/finance";
 import type { LedgerDate } from "@/domain/ledger";
 import type { Currency, Money } from "@/domain/money";
 
@@ -71,17 +71,19 @@ export interface FinanceStore {
   /** Like findAccount, but locks the row until the transaction ends. */
   lockAccount(id: string): Promise<FinancialAccountRecord | null>;
   findAccountByCreationKey(key: string): Promise<FinancialAccountRecord | null>;
-  accountNameTaken(name: string, exceptId?: string): Promise<boolean>;
+  /** True if another of this owner's accounts has the same comparison key. */
+  accountNameTaken(name: AccountName, exceptId?: string): Promise<boolean>;
+  /** Stores `name.display` as the name and `name.key` as its comparison key. */
   insertAccount(row: {
     id: string;
-    name: string;
+    name: AccountName;
     type: FinancialAccountType;
     currencyCode: string;
     ledgerAccountId: string;
     creationKey: string;
     creationFingerprint: string;
   }): Promise<FinancialAccountRecord>;
-  updateAccount(id: string, changes: { name: string; type: FinancialAccountType }): Promise<void>;
+  updateAccount(id: string, changes: { name: AccountName; type: FinancialAccountType }): Promise<void>;
   setAccountArchived(id: string, archived: boolean): Promise<void>;
   /** Deletes the account and then its (unused) ledger account. */
   deleteAccount(id: string, ledgerAccountId: string): Promise<void>;

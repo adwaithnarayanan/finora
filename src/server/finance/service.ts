@@ -12,6 +12,7 @@ import {
   type PostingPlan,
   type TransactionIntent,
   accountLifecycle,
+  parseAccountName,
   parseAccountType,
   parseAmountFor,
   parseCategoryKind,
@@ -199,6 +200,14 @@ async function postAndRecord(
   return { value, replayed: false };
 }
 
+/**
+ * v1 account-creation fingerprint. `name` is the submitted name after
+ * `trim()` only, NOT the canonical (NFC) display name: v1 fingerprints were
+ * recorded that way before ADR 0007, and the account-name migration rewrote
+ * stored names to NFC without touching them, so an identical retry of an
+ * earlier non-NFC request must still match. Changing what is hashed needs a
+ * new version tag, never a redefinition of "v1".
+ */
 function accountFingerprint(input: {
   name: string;
   type: FinancialAccountType;
@@ -273,7 +282,7 @@ export function createFinanceService(run: FinanceRunner) {
       },
     ): Promise<Replayable<FinancialAccountRecord>> {
       const issues = new IssueCollector();
-      const name = issues.capture("name", () => parseName(input.name, "Account name"));
+      const name = issues.capture("name", () => parseAccountName(input.name));
       const type = issues.capture("type", () => parseAccountType(input.type));
       const currencyCode = input.currency === undefined || input.currency === "" ? DEFAULT_CURRENCY_CODE : input.currency;
       if (typeof currencyCode !== "string" || !/^[A-Z]{3}$/.test(currencyCode)) issues.add("currency", "Choose a currency");
@@ -282,7 +291,7 @@ export function createFinanceService(run: FinanceRunner) {
       issues.throwIfAny();
       const key = parseRequestKey(input.idempotencyKey);
       const fingerprint = accountFingerprint({
-        name: name!,
+        name: (input.name as string).trim(), // parseAccountName accepted it, so it is a string
         type: type!,
         currency: currencyCode as string,
         opening: opening ? { amount: opening.amount.trim(), date: String(opening.date) } : null,
@@ -303,16 +312,17 @@ export function createFinanceService(run: FinanceRunner) {
           const issues = new IssueCollector();
           parseAmountFor(issues, "openingAmount", opening.amount.trim(), {
             id: "",
-            name: name!,
+            name: name!.display,
             ledgerAccountId: "",
             currency,
             archived: false,
           });
           issues.throwIfAny();
         }
-        // Serialise same-name requests (any letter case) for a friendly error;
-        // the case-insensitive unique index is the backstop.
-        await stores.finance.lockKey(`account-name:${name!.toLowerCase()}`);
+        // Serialise requests for the same comparison key (any letter case or
+        // Unicode form) for a friendly error; the (owner_id, name_key) unique
+        // index is the authority if anything races past this.
+        await stores.finance.lockKey(`account-name:${name!.key}`);
         if (await stores.finance.accountNameTaken(name!)) throw new FinanceConflictError("account-name-taken");
 
         const id = randomUUID();
@@ -338,12 +348,12 @@ export function createFinanceService(run: FinanceRunner) {
     /** Name and type only: currency and ledger link never change. */
     async updateAccount(owner: AuthorizedOwner, id: string, input: { readonly name: unknown; readonly type: unknown }): Promise<void> {
       const issues = new IssueCollector();
-      const name = issues.capture("name", () => parseName(input.name, "Account name"));
+      const name = issues.capture("name", () => parseAccountName(input.name));
       const type = issues.capture("type", () => parseAccountType(input.type));
       issues.throwIfAny();
       return inTransaction(owner, async ({ finance }) => {
         const account = await mustFindAccount(finance, id, true);
-        await finance.lockKey(`account-name:${name!.toLowerCase()}`);
+        await finance.lockKey(`account-name:${name!.key}`);
         if (await finance.accountNameTaken(name!, account.id)) throw new FinanceConflictError("account-name-taken");
         await finance.updateAccount(account.id, { name: name!, type: type! });
       });

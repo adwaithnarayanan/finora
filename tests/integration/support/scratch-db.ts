@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { appendFileSync, cpSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import pg from "pg";
@@ -15,6 +17,8 @@ const SCRATCH_NAME = /^finora_itest_[a-z0-9_]+_[0-9a-f]{12}$/;
 
 export type ScratchDatabase = {
   readonly name: string;
+  /** Migration-role URL of this database (for further Prisma commands). */
+  readonly url: URL;
   readonly client: pg.Client;
   /** Drops this run's database (only it). Idempotent; reports every failure. */
   readonly drop: () => Promise<void>;
@@ -38,18 +42,79 @@ export function redactCredentials(text: string, url: URL): string {
   return secrets.reduce((out, secret) => out.split(secret).join("[redacted]"), text);
 }
 
-/** Applies every migration with the Prisma CLI; on failure, throws with its (redacted) output. */
-export function deployMigrations(url: URL): void {
+/**
+ * Runs a Prisma CLI command (e.g. ["migrate", "deploy"]) against `url`, with
+ * the project's migrations or a `MigrationSet`; on failure, throws with its
+ * (redacted) output.
+ */
+export function runPrisma(url: URL, args: readonly string[], set?: MigrationSet): void {
   try {
-    execFileSync(path.join(process.cwd(), "node_modules", ".bin", "prisma"), ["migrate", "deploy"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf8",
-      env: { ...process.env, MIGRATION_DATABASE_URL: url.toString() },
-    });
+    execFileSync(
+      path.join(process.cwd(), "node_modules", ".bin", "prisma"),
+      [...args, ...(set ? ["--config", set.config] : [])],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf8",
+        env: { ...process.env, MIGRATION_DATABASE_URL: url.toString() },
+      },
+    );
   } catch (error) {
     const { stdout, stderr, status } = error as { stdout?: string; stderr?: string; status?: number | null };
     const output = redactCredentials(`${stdout ?? ""}\n${stderr ?? ""}`.trim(), url);
-    throw new Error(`prisma migrate deploy failed (exit ${status ?? "unknown"}):\n${output || "(no output)"}`);
+    throw new Error(`prisma ${args.join(" ")} failed (exit ${status ?? "unknown"}):\n${output || "(no output)"}`);
+  }
+}
+
+/** Applies every migration with the Prisma CLI; on failure, throws with its (redacted) output. */
+export function deployMigrations(url: URL, set?: MigrationSet): void {
+  runPrisma(url, ["migrate", "deploy"], set);
+}
+
+export type MigrationSet = {
+  /** Prisma config file pointing at the copied migrations. */
+  readonly config: string;
+  readonly remove: () => void;
+};
+
+/**
+ * A temporary copy of prisma/migrations for testing a migration against an
+ * earlier schema: only the migrations up to and including `through`, with
+ * `append` SQL added to the end of named ones. The project's own migrations
+ * directory is never modified.
+ */
+export function migrationSet({ through, append = {} }: { through?: string; append?: Record<string, string> } = {}): MigrationSet {
+  const source = path.join(process.cwd(), "prisma", "migrations");
+  const dir = mkdtempSync(path.join(os.tmpdir(), "finora-migrations-"));
+  const remove = () => rmSync(dir, { recursive: true, force: true });
+  try {
+    const target = path.join(dir, "migrations");
+    cpSync(path.join(source, "migration_lock.toml"), path.join(target, "migration_lock.toml"));
+    const names = readdirSync(source, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort()
+      .filter((name) => through === undefined || name <= through);
+    if (through !== undefined && !names.includes(through)) throw new Error(`no migration named ${through}`);
+    for (const name of names) cpSync(path.join(source, name), path.join(target, name), { recursive: true });
+    for (const [name, sql] of Object.entries(append)) {
+      if (!names.includes(name)) throw new Error(`cannot append to missing migration ${name}`);
+      appendFileSync(path.join(target, name, "migration.sql"), `\n${sql}\n`);
+    }
+    const config = path.join(dir, "prisma.config.mjs");
+    const settings = {
+      schema: path.join(process.cwd(), "prisma", "schema.prisma"),
+      migrations: { path: target },
+      datasource: { url: "" },
+    };
+    // The URL comes from the environment at run time, never from this file.
+    writeFileSync(
+      config,
+      `const settings = ${JSON.stringify(settings)};\nsettings.datasource.url = process.env.MIGRATION_DATABASE_URL ?? "";\nexport default settings;\n`,
+    );
+    return { config, remove };
+  } catch (error) {
+    remove();
+    throw error;
   }
 }
 
@@ -73,7 +138,7 @@ async function dropDatabase(name: string): Promise<void> {
  */
 export async function createMigratedScratchDatabase(
   label: string,
-  { migrate = deployMigrations }: { migrate?: (url: URL) => void } = {},
+  { migrate = (url: URL) => deployMigrations(url) }: { migrate?: (url: URL) => void } = {},
 ): Promise<ScratchDatabase> {
   const name = scratchDatabaseName(label);
   const url = new URL(inject("local").migrationDatabaseUrl);
@@ -121,5 +186,5 @@ export async function createMigratedScratchDatabase(
     }
     throw error;
   }
-  return { name, client, drop };
+  return { name, url, client, drop };
 }

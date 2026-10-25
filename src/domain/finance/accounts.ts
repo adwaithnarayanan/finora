@@ -1,6 +1,7 @@
 import type { Currency } from "@/domain/money";
 
-import { InvalidFinanceInputError } from "./text";
+import { type AccountName, canonicalAccountName } from "./account-name";
+import { InvalidFinanceInputError, parseName } from "./text";
 
 /** User-facing account types in this release. Both are asset accounts in the ledger. */
 export const FINANCIAL_ACCOUNT_TYPES = ["bank", "cash"] as const;
@@ -19,6 +20,17 @@ export function parseAccountType(value: unknown): FinancialAccountType {
     throw new InvalidFinanceInputError("Choose bank account or cash");
   }
   return value as FinancialAccountType;
+}
+
+/**
+ * Parses a submitted account name into canonical form (see account-name.ts).
+ * The length limit applies to the NFC form, which is what is stored.
+ */
+export function parseAccountName(value: unknown): AccountName {
+  if (typeof value !== "string") throw new InvalidFinanceInputError("Account name is required");
+  const name = canonicalAccountName(value);
+  parseName(name.display, "Account name");
+  return name;
 }
 
 /** What the domain needs to know about an account to post against it. */

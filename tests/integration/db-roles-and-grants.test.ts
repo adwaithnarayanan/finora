@@ -161,6 +161,7 @@ describe("schema-wide guards (keep passing as tables are added)", () => {
       "currencies:SELECT",
       "financial_accounts.archived_at:UPDATE",
       "financial_accounts.name:UPDATE",
+      "financial_accounts.name_key:UPDATE",
       "financial_accounts.type:UPDATE",
       "financial_accounts:DELETE",
       "financial_accounts:INSERT",

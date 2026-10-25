@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=24.0.0 <25.0.0"
+    "node": "24.22.1"
   },
   "scripts": {
     "dev": "next dev",
@@ -26,6 +26,7 @@
     "db:local:drift": "node scripts/db/local.mjs drift",
     "db:local:reset": "node scripts/db/local.mjs reset",
     "db:migrate:deploy": "prisma migrate deploy",
+    "db:account-names": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/db/account-names.mjs",
     "owner:provision": "node scripts/owner/provision.mjs"
   },
   "dependencies": {

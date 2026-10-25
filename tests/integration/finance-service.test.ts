@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 
-import { DEFAULT_CATEGORIES, FinanceValidationError } from "@/domain/finance";
+import { DEFAULT_CATEGORIES, FinanceValidationError, canonicalAccountName } from "@/domain/finance";
 import { parseLedgerDate } from "@/domain/ledger";
 import type { OwnerId } from "@/domain/owner";
 import type { AuthorizedOwner } from "@/server/auth/types";
@@ -611,7 +611,30 @@ describe("default categories (explicit setup only)", () => {
   });
 });
 
-describe("account names are unique per owner regardless of letter case", () => {
+/** The finance service with the store's friendly duplicate-name check switched off. */
+function withoutNameCheck(client = prisma) {
+  return financeFor(client, (stores) => ({
+    ledger: stores.ledger,
+    finance: new Proxy(stores.finance, {
+      get(target, prop, receiver) {
+        if (prop === "accountNameTaken") return async () => false;
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    }) as FinanceStore,
+  }));
+}
+
+/** Code points in hex, so NFC and NFD forms are told apart in assertions. */
+const hexOf = (s: string) => [...s].map((c) => c.codePointAt(0)!.toString(16).padStart(4, "0")).join(" ");
+
+/** Stored name and key of an account, as code points. */
+async function stored(id: string) {
+  const { rows } = await admin.query("SELECT name, name_key FROM finora.financial_accounts WHERE id = $1", [id]);
+  return { name: hexOf(rows[0].name), key: hexOf(rows[0].name_key) };
+}
+
+describe("account names are unique per owner by comparison key (ADR 0007)", () => {
   it("refuses a name that differs only by case, on create and rename", async () => {
     await account(ownerA, "Joint Savings");
     await expect(account(ownerA, "JOINT savings")).rejects.toMatchObject({ reason: "account-name-taken" });
@@ -628,7 +651,7 @@ describe("account names are unique per owner regardless of letter case", () => {
     // RLS context is owner A (whose account it is); only the store's owner differs.
     const taken = (storeOwner: AuthorizedOwner) =>
       runInOwnerScope(prisma, ownerA, (tx) =>
-        new PrismaFinanceStore(tx, storeOwner.ownerId as OwnerId).accountNameTaken("owner filter PROBE"),
+        new PrismaFinanceStore(tx, storeOwner.ownerId as OwnerId).accountNameTaken(canonicalAccountName("owner filter PROBE")),
       );
     expect(await taken(ownerA)).toBe(true);
     expect(await taken(ownerB)).toBe(false);
@@ -661,31 +684,123 @@ describe("account names are unique per owner regardless of letter case", () => {
       await pool.$disconnect();
     }
     const { rows } = await admin.query(
-      "SELECT count(*)::int AS n FROM finora.financial_accounts WHERE owner_id = $1 AND lower(name) = 'race name'",
+      "SELECT count(*)::int AS n FROM finora.financial_accounts WHERE owner_id = $1 AND name_key = 'race name'",
       [seededA.ownerId],
     );
     expect(rows[0].n).toBe(1);
   });
 
-  it("reports the database's case-insensitive index as a friendly conflict when the app check is skipped", async () => {
+  it("reports the database's (owner_id, name_key) index as a friendly conflict when the app check is skipped", async () => {
     await account(ownerA, "Backstop");
-    const skipping = financeFor(prisma, (stores) => ({
-      ledger: stores.ledger,
-      finance: new Proxy(stores.finance, {
-        get(target, prop, receiver) {
-          if (prop === "accountNameTaken") return async () => false;
-          const value = Reflect.get(target, prop, receiver) as unknown;
-          return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
-        },
-      }) as FinanceStore,
-    }));
     const before = await counts(seededA.ownerId);
-    const error = await skipping
+    const error = await withoutNameCheck()
       .createAccount(ownerA, { name: "BACKSTOP", type: "bank", idempotencyKey: key() })
       .then(() => null, (e: unknown) => e as Error);
     expect(error).toBeInstanceOf(FinanceConflictError);
     expect(error?.message).toBe("You already have an account with that name");
     expect(error?.message).not.toMatch(/financial_accounts|unique|constraint|SQL/i);
     expect(await counts(seededA.ownerId)).toEqual(before); // the ledger account was rolled back too
+  });
+
+  it("reports the index as a friendly conflict on rename too, changing nothing", async () => {
+    await account(ownerA, "Rename Backstop");
+    const other = await account(ownerA, "Rename Backstop Other");
+    const error = await withoutNameCheck()
+      .updateAccount(ownerA, other.id, { name: "rename BACKSTOP", type: "cash" })
+      .then(() => null, (e: unknown) => e as Error);
+    expect(error).toBeInstanceOf(FinanceConflictError);
+    expect(error?.message).toBe("You already have an account with that name");
+    expect(error?.message).not.toMatch(/financial_accounts|name_key|unique|constraint|23505|SQL/i);
+    expect(await finance.getAccount(ownerA, other.id)).toMatchObject({ account: { name: "Rename Backstop Other", type: "bank" } });
+  });
+
+  it("stores the NFC name and its key, whatever form was typed", async () => {
+    const created = await account(ownerA, "  Cafe\u0301 Fund ");
+    expect(created.name).toBe("Caf\u00e9 Fund");
+    expect(await stored(created.id)).toEqual({ name: hexOf("Caf\u00e9 Fund"), key: hexOf("caf\u00e9 fund") });
+    await finance.updateAccount(ownerA, created.id, { name: "CAFE\u0301 FUND", type: "bank" }); // its own name, another case
+    expect(await stored(created.id)).toEqual({ name: hexOf("CAF\u00c9 FUND"), key: hexOf("caf\u00e9 fund") });
+  });
+
+  it.each([
+    ["NFD and NFC", "Caf\u00e9 Pot", "Cafe\u0301 pot"],
+    ["accented Latin case", "\u00c9cole Fees", "\u00e9COLE FEES"],
+    ["Turkish dotted capital I", "\u0130stanbul Trip", "i\u0307stanbul trip"],
+    ["Greek final sigma", "\u039f\u0394\u039f\u03a3 Card", "\u03bf\u03b4\u03bf\u03c2 card"],
+    ["capital sharp s", "Stra\u00dfe Rent", "STRA\u1e9eE RENT"],
+  ])("refuses %s variants on create and on rename", async (_label, first, variant) => {
+    await account(ownerA, first);
+    await expect(account(ownerA, variant)).rejects.toMatchObject({ reason: "account-name-taken" });
+    const other = await account(ownerA, `${first} 2`);
+    await expect(finance.updateAccount(ownerA, other.id, { name: variant, type: "bank" })).rejects.toMatchObject({
+      reason: "account-name-taken",
+    });
+  });
+
+  it.each([
+    ["sharp s and ss", "Gro\u00dfe Bank", "GROSSE BANK"],
+    ["dotted and dotless I", "\u0130zmir Card", "Izmir Card"],
+    ["dotless i and i", "\u0131zmir Wallet", "izmir Wallet"],
+    ["final and medial sigma at the end", "\u03bf\u03b4\u03bf\u03c2 Pot", "\u03bf\u03b4\u03bf\u03c3 Pot"],
+    ["compatibility forms", "\ufb01ve Pot", "five Pot"],
+  ])("keeps %s apart, as the policy says", async (_label, first, second) => {
+    await account(ownerA, first);
+    await expect(account(ownerA, second)).resolves.toMatchObject({ name: second });
+  });
+
+  it("renames exactly one account when renames to equivalent names race", async () => {
+    const ids = await Promise.all(["Rename Race 1", "Rename Race 2", "Rename Race 3", "Rename Race 4"].map((n) => account(ownerA, n)));
+    const targets = ["Cr\u00e8me Pot", "Cre\u0300me pot", "CR\u00c8ME POT", "cre\u0300ME Pot"];
+    const pool = createPrismaClient(inject("local").appDatabaseUrl, 4);
+    try {
+      const results = await Promise.allSettled(
+        ids.map((a, i) => financeFor(pool).updateAccount(ownerA, a.id, { name: targets[i]!, type: "bank" })),
+      );
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      for (const r of results) if (r.status === "rejected") expect(r.reason).toMatchObject({ reason: "account-name-taken" });
+    } finally {
+      await pool.$disconnect();
+    }
+    const { rows } = await admin.query(
+      "SELECT count(*)::int AS n FROM finora.financial_accounts WHERE owner_id = $1 AND name_key = $2",
+      [seededA.ownerId, "cr\u00e8me pot"],
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
+  it("lets exactly one of a create and renames to the same key win", async () => {
+    const renamed = await Promise.all(["Mixed Race 1", "Mixed Race 2"].map((n) => account(ownerA, n)));
+    const pool = createPrismaClient(inject("local").appDatabaseUrl, 3);
+    try {
+      const service = financeFor(pool);
+      const results = await Promise.allSettled([
+        service.createAccount(ownerA, { name: "\u00d6l Fund", type: "bank", idempotencyKey: key() }),
+        service.updateAccount(ownerA, renamed[0]!.id, { name: "O\u0308L FUND", type: "bank" }),
+        service.updateAccount(ownerA, renamed[1]!.id, { name: "\u00f6l fund", type: "bank" }),
+      ]);
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      for (const r of results) if (r.status === "rejected") expect(r.reason).toMatchObject({ reason: "account-name-taken" });
+    } finally {
+      await pool.$disconnect();
+    }
+    const { rows } = await admin.query(
+      "SELECT count(*)::int AS n FROM finora.financial_accounts WHERE owner_id = $1 AND name_key = $2",
+      [seededA.ownerId, "\u00f6l fund"],
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
+  it("leaves the database index as the authority when racing writers skip the app check", async () => {
+    const pool = createPrismaClient(inject("local").appDatabaseUrl, 4);
+    try {
+      const names = ["Na\u00efve Pot", "Nai\u0308ve pot", "NA\u00cfVE POT", "nai\u0308VE Pot"];
+      const results = await Promise.allSettled(
+        names.map((name) => withoutNameCheck(pool).createAccount(ownerA, { name, type: "bank", idempotencyKey: key() })),
+      );
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      for (const r of results) if (r.status === "rejected") expect(r.reason).toMatchObject({ reason: "account-name-taken" });
+    } finally {
+      await pool.$disconnect();
+    }
   });
 });

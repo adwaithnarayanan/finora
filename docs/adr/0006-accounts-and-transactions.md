@@ -30,19 +30,18 @@ invariants are unchanged.
 ### Model (migration `20261025000300_accounts_and_transactions`)
 
 - **`financial_accounts`**
-  - Columns: `name` (unique per owner regardless of letter case: the service
-    checks `lower(name)` under a per-name advisory lock for a friendly error,
-    and the unique index `financial_accounts_owner_name_ci_key` on
-    `(owner_id, lower(name))` enforces it; migration
-    `20261025000400_account_name_case_insensitive`),
+  - Columns: `name` (trimmed, NFC) and `name_key` (its comparison key;
+    unique per owner through the index `financial_accounts_owner_name_key_key`
+    on `(owner_id, name_key)`; see ADR 0007, which replaced the earlier
+    `lower(name)` index of migration `20261025000400`),
     `type` (`bank | cash`), `currency_code`, `ledger_account_id`, the creation
     key and fingerprint, timestamps, and `archived_at`.
   - Each account is backed by exactly one **asset** ledger account of the
     same owner and currency. A composite foreign key and a trigger enforce
     this.
   - The currency, ledger link and identity are immutable (trigger). Only the
-    name, type and archive state can change, and only those columns are
-    granted.
+    name (with its key), type and archive state can change, and only those
+    columns are granted.
 - **`categories`**
   - Columns: `name` (unique per owner and kind), `kind` (`income | expense`,
     immutable) and `archived_at`.
@@ -187,8 +186,8 @@ same equity account.
   replacement must record the entry that replaced the voided original. A bug
   that recorded a different amount, account or side therefore can't commit.
 - **Grants and RLS:**
-  - `financial_accounts`: SELECT, INSERT, DELETE, plus UPDATE of name, type
-    and archived_at.
+  - `financial_accounts`: SELECT, INSERT, DELETE, plus UPDATE of name,
+    name_key (ADR 0007), type and archived_at.
   - `categories`: SELECT, INSERT, plus UPDATE of name and archived_at.
   - Mapping tables: SELECT, INSERT.
   - `transactions`: SELECT, INSERT, plus UPDATE of payee, note and
@@ -197,82 +196,16 @@ same equity account.
   - The catalog tests pin the grants and cover RLS, owner-safe foreign keys
     and `owner_id` in every unique index.
 
-### Case-insensitive names: migration safety
+### Account-name uniqueness (superseded)
 
-Migration `20261025000400` first counts owner/name groups that differ only
-by letter case. If any exist it raises an error (with a hint query) and
-changes nothing; accounts are never renamed or deleted automatically. Prisma
-cannot express expression indexes, so the index lives only in SQL and
-`npm run db:local:drift` does not see it. Instead:
-
-- The read-only catalog query `scripts/db/sql/verify-account-name-index.sql`
-  checks the index's actual definition. It must exist on
-  `finora.financial_accounts`, be unique, valid and ready, have exactly the
-  keys `(owner_id, lower(name))`, and match `pg_get_indexdef` exactly.
-- Integration tests run that query. They also confirm it rejects materially
-  different variants (missing, case-sensitive, non-unique, reordered,
-  partial, extra columns, another collation or table).
-- The hosted runbook runs the same query after each deployment.
-- Separately, integration tests check that the index works (case variants
-  are rejected) and that the conflict guard fires.
-
-### Unicode letter case (assessment, Milestone 4C)
-
-**Intended semantics.** Two account names of one owner conflict when
-PostgreSQL's `lower()` makes them equal, under the database's default
-collation. That is lower-casing, not full Unicode case folding:
-
-- "Straße" and "STRASSE" are different names.
-- "ΟΔΟΣ" (lowered with a final ς) and "οδοσ" are different names.
-- Names are not Unicode-normalised, so a precomposed "é" and "e" plus a
-  combining accent are different names too.
-
-The index is the authority. The service's pre-check uses the same `lower()`
-in SQL, so it always agrees with the index. Only the advisory-lock key uses
-JavaScript `toLowerCase()`.
-
-**Evidence (local stack, PostgreSQL 17.11).** The database default is ICU
-(`datlocprovider = i`, `en-US`). Under it, `lower()` matched JavaScript
-`toLowerCase()` for every sample, including the final sigma and "İ". Under
-the other providers, explicit collations diverge from JavaScript:
-
-| Provider (collation)                                  | Diverges from JavaScript on                               |
-| ----------------------------------------------------- | --------------------------------------------------------- |
-| ICU (`und-x-icu`, `en-x-icu`)                          | none of the samples                                       |
-| ICU, Turkish (`tr-x-icu`)                              | "İ"                                                       |
-| libc (`en_US.utf8`, `C.utf8`) and builtin (`pg_c_utf8`) | the final sigma ("ΟΔΟΣ" becomes "οδοσ") and "İ"           |
-| plain `C`                                              | everything except A–Z (for example "CAFÉ" becomes "cafÉ") |
-
-**Consequences of a divergence.**
-
-- If JavaScript and PostgreSQL disagree on a name, two concurrent requests
-  may take different locks. The index still lets only one of them through,
-  and the other still gets the friendly "already have an account" error via
-  `withNameConflict`. That is covered by the backstop test.
-- A different locale on the hosted database changes which names conflict.
-  For example, with plain `C`, "Café" and "CAFÉ" could coexist.
-- Changing a database's locale or ICU version later can, in principle,
-  change `lower()` results and so invalidate the index. Reindex after such a
-  change.
-
-**Recommendation.**
-
-1. Before the first hosted deployment, record the hosted database's locale
-   provider and collation (query in the hosted runbook). Proceed only if
-   it is ICU (or ICU-equivalent for these samples) like the local stack.
-   If it is not, decide before relying on non-ASCII account names.
-2. Optional hardening without a product decision: derive the lock key in
-   SQL with the same `lower()`, so even the lock always agrees with the
-   index.
-3. These need a product decision and a migration, so they are not done here:
-   - Normalising names to NFC on input. Existing rows would need a check for
-     names that collide after normalisation, just like the case-conflict
-     guard.
-   - Full case folding ("ß" equal to "ss"). Options are a nondeterministic
-     ICU collation such as `und-u-ks-level2` on the column, or
-     PostgreSQL 18's `casefold()` in the index. Either changes which
-     existing names conflict, and the collation route also changes how
-     names sort and compare in every query.
+Migration `20261025000400` made names unique per owner under PostgreSQL's
+`lower(name)`. The Milestone 4C assessment showed that rule depended on the
+database's collation provider, did not normalise Unicode, and used a
+different lower-casing for the advisory lock than for the index. ADR 0007
+replaces it with an application-defined comparison key stored in
+`name_key` (migration `20261025000500`). Its catalog check
+`scripts/db/sql/verify-account-name-key-index.sql` replaces
+`verify-account-name-index.sql`.
 
 ## Consequences
 
