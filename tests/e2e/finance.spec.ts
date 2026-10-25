@@ -1,4 +1,4 @@
-import { type Locator, type Page, expect, test } from "@playwright/test";
+import { type Locator, type Page, test as base, expect } from "@playwright/test";
 
 import pg from "pg";
 
@@ -6,11 +6,25 @@ import { readLocalSupabase } from "../../scripts/lib/local-supabase.mjs";
 
 import { type ProvisionedOwner, e2eUsers } from "./support/fixtures";
 import { signIn } from "./support/login";
-import { provisionTestOwner } from "./support/owners";
+import { provisionTestOwner, removeTestUsers } from "./support/owners";
 
 const users = e2eUsers();
 
-test.describe.configure({ mode: "serial" });
+/**
+ * `owner` is a brand-new owner for one test attempt (a retry gets another),
+ * provisioned through the real workflow and removed again when the test ends,
+ * so no test depends on what another test, attempt or spec left behind.
+ */
+const test = base.extend<{ owner: ProvisionedOwner }>({
+  owner: async ({}, provide) => {
+    const owner = await provisionTestOwner("finance");
+    try {
+      await provide(owner);
+    } finally {
+      await removeTestUsers([owner]);
+    }
+  },
+});
 
 /** Selects the option whose visible text contains `text` (labels include balances). */
 async function choose(select: Locator, text: string) {
@@ -56,6 +70,60 @@ async function record(page: Page, fill: (page: Page) => Promise<void>) {
   await expect(page.getByRole("status").filter({ hasText: "Transaction recorded." })).toBeVisible();
 }
 
+/** Creates an account through the form; lands on its page. */
+async function createAccount(page: Page, name: string, opts: { type?: string; opening?: string; asOf?: string } = {}) {
+  await page.goto("/accounts/new");
+  await page.getByLabel("Account name").fill(name);
+  if (opts.type) await page.getByLabel("Type").selectOption(opts.type);
+  if (opts.opening) await page.getByLabel("Amount", { exact: true }).fill(opts.opening);
+  if (opts.asOf) await page.getByLabel("As of").fill(opts.asOf);
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: new RegExp(name) })).toBeVisible();
+}
+
+/** HDFC Savings (₹50,000 opening balance on 1 Oct 2026) and an empty cash Wallet. */
+async function createSampleAccounts(page: Page) {
+  await createAccount(page, "HDFC Savings", { opening: "50000", asOf: "2026-10-01" });
+  await createAccount(page, "Wallet", { type: "cash" });
+}
+
+const sampleIncome = async (p: Page) => {
+  await p.getByLabel(/^Income/).check();
+  await choose(p.getByLabel("Received into", { exact: true }), "HDFC Savings");
+  await p.getByLabel("Category", { exact: true }).selectOption({ label: "Salary" });
+  await p.getByLabel("Amount", { exact: true }).fill("25000.50");
+  await p.getByLabel("Date", { exact: true }).fill("2026-10-20");
+  await p.getByLabel("Received from (optional)").fill("Acme Ltd");
+};
+
+const sampleExpense = async (p: Page) => {
+  await expect(p.getByLabel(/^Expense/)).toBeChecked();
+  await choose(p.getByLabel("Paid from", { exact: true }), "HDFC Savings");
+  await p.getByLabel("Category", { exact: true }).selectOption({ label: "Groceries" });
+  await p.getByLabel("Amount", { exact: true }).fill("1200");
+  await p.getByLabel("Date", { exact: true }).fill("2026-10-21");
+  await p.getByLabel("Paid to (optional)").fill("BigBasket");
+  await p.getByLabel("Note (optional)").fill("Weekly shop");
+};
+
+const sampleTransfer = async (p: Page) => {
+  await p.getByLabel(/^Transfer/).check();
+  await choose(p.getByLabel("From account", { exact: true }), "HDFC Savings");
+  await choose(p.getByLabel("To account", { exact: true }), "Wallet");
+  await p.getByLabel("Amount", { exact: true }).fill("2000");
+  await p.getByLabel("Date", { exact: true }).fill("2026-10-22");
+};
+
+/**
+ * The history "record income, an expense and a transfer" builds, for tests
+ * that start from it: HDFC Savings ₹71,800.50, Wallet ₹2,000.00.
+ */
+async function createSampleHistory(page: Page) {
+  await createSampleAccounts(page);
+  await addDefaultCategories(page);
+  for (const fill of [sampleIncome, sampleExpense, sampleTransfer]) await record(page, fill);
+}
+
 test.describe("unauthorised access", () => {
   test("signed-out visitors are sent to sign-in from every finance page", async ({ page }) => {
     for (const path of ["/accounts", "/accounts/new", "/transactions", "/transactions/new", "/categories"]) {
@@ -74,15 +142,8 @@ test.describe("unauthorised access", () => {
 });
 
 test.describe("accounts and transactions (owner)", () => {
-  // These tests build on each other (serial). Each attempt, including a
-  // retry, starts from a brand-new owner, so nothing from an earlier attempt
-  // or another spec is assumed.
-  let owner: ProvisionedOwner;
-  test.beforeAll(async () => {
-    owner = await provisionTestOwner("finance");
-  });
-
-  test.beforeEach(async ({ page }) => {
+  // Each test sets up what it needs for its own new owner; none relies on another.
+  test.beforeEach(async ({ page, owner }) => {
     await signIn(page, owner.email, owner.password);
     await expect(page).toHaveURL(/\/$/);
   });
@@ -112,6 +173,7 @@ test.describe("accounts and transactions (owner)", () => {
   });
 
   test("validation errors keep the input and save nothing", async ({ page }) => {
+    await createAccount(page, "HDFC Savings");
     await page.goto("/accounts/new");
     await page.getByLabel("Account name").fill("hdfc savings");
     await page.getByLabel("Amount", { exact: true }).fill("12.345");
@@ -124,34 +186,15 @@ test.describe("accounts and transactions (owner)", () => {
   });
 
   test("record income, an expense and a transfer", async ({ page }) => {
+    await createSampleAccounts(page);
     await addDefaultCategories(page);
-    await record(page, async (p) => {
-      await p.getByLabel(/^Income/).check();
-      await choose(p.getByLabel("Received into", { exact: true }), "HDFC Savings");
-      await p.getByLabel("Category", { exact: true }).selectOption({ label: "Salary" });
-      await p.getByLabel("Amount", { exact: true }).fill("25000.50");
-      await p.getByLabel("Date", { exact: true }).fill("2026-10-20");
-      await p.getByLabel("Received from (optional)").fill("Acme Ltd");
-    });
-    await record(page, async (p) => {
-      await expect(p.getByLabel(/^Expense/)).toBeChecked();
-      await choose(p.getByLabel("Paid from", { exact: true }), "HDFC Savings");
-      await p.getByLabel("Category", { exact: true }).selectOption({ label: "Groceries" });
-      await p.getByLabel("Amount", { exact: true }).fill("1200");
-      await p.getByLabel("Date", { exact: true }).fill("2026-10-21");
-      await p.getByLabel("Paid to (optional)").fill("BigBasket");
-      await p.getByLabel("Note (optional)").fill("Weekly shop");
-    });
-    await record(page, async (p) => {
-      await p.getByLabel(/^Transfer/).check();
-      await choose(p.getByLabel("From account", { exact: true }), "HDFC Savings");
-      await choose(p.getByLabel("To account", { exact: true }), "Wallet");
-      await p.getByLabel("Amount", { exact: true }).fill("2000");
-      await p.getByLabel("Date", { exact: true }).fill("2026-10-22");
-    });
+    await record(page, sampleIncome);
+    await record(page, sampleExpense);
+    await record(page, sampleTransfer);
   });
 
   test("a transfer needs two different accounts and a valid amount", async ({ page }) => {
+    await createSampleAccounts(page);
     await page.goto("/transactions/new?type=transfer");
     const from = page.getByLabel("From account", { exact: true });
     await choose(from, "HDFC Savings");
@@ -165,6 +208,7 @@ test.describe("accounts and transactions (owner)", () => {
   });
 
   test("balances and history reflect every transaction", async ({ page }) => {
+    await createSampleHistory(page);
     await openAccount(page, "HDFC Savings");
     await expect(balanceOn(page)).toHaveText("₹71,800.50"); // 50,000 + 25,000.50 − 1,200 − 2,000
     await openAccount(page, "Wallet");
@@ -191,6 +235,7 @@ test.describe("accounts and transactions (owner)", () => {
   });
 
   test("void an expense through a reversal; it stays in history", async ({ page }) => {
+    await createSampleHistory(page);
     await page.goto("/transactions?type=expense");
     await page.getByRole("link", { name: /Groceries/ }).click();
     await page.getByRole("button", { name: "Void transaction" }).click();
@@ -204,6 +249,7 @@ test.describe("accounts and transactions (owner)", () => {
   });
 
   test("archive an account: no new transactions, history kept; then restore it", async ({ page }) => {
+    await createSampleHistory(page);
     await openAccount(page, "Wallet");
     await expect(page.getByRole("button", { name: "Delete account" })).toHaveCount(0); // it has history
     await page.getByRole("button", { name: "Archive account" }).click();
@@ -233,27 +279,24 @@ test.describe("accounts and transactions (owner)", () => {
   });
 
   test("correct the opening balance: original reversed, replacement recorded", async ({ page }) => {
+    await createSampleHistory(page);
     await openAccount(page, "HDFC Savings");
+    await expect(balanceOn(page)).toHaveText("₹71,800.50");
     await page.getByText("Correct the opening balance").click();
     await page.getByLabel(/^Opening balance/).fill("55000");
     await page.getByRole("button", { name: "Correct opening balance" }).click();
     await expect(page.getByText("₹55,000.00 as of 1 Oct 2026")).toBeVisible();
-    await expect(balanceOn(page)).toHaveText("₹78,000.50");
+    await expect(balanceOn(page)).toHaveText("₹76,800.50"); // 71,800.50 + (55,000 − 50,000)
   });
 });
 
 test.describe("default categories (a brand-new owner)", () => {
-  let owner: ProvisionedOwner;
-  test.beforeAll(async () => {
-    owner = await provisionTestOwner("categories");
-  });
-
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page, owner }) => {
     await signIn(page, owner.email, owner.password);
     await expect(page).toHaveURL(/\/$/);
   });
 
-  test("viewing pages creates no categories; defaults are added only on request", async ({ page }) => {
+  test("viewing pages creates no categories; defaults are added only on request", async ({ page, owner }) => {
     expect(await categoryCount(owner.ownerId)).toBe(0);
     // An account, so /transactions/new shows the form (and the category notice).
     await page.goto("/accounts/new");
