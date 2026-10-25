@@ -1,5 +1,9 @@
 import { type Locator, type Page, expect, test } from "@playwright/test";
 
+import pg from "pg";
+
+import { readLocalSupabase } from "../../scripts/lib/local-supabase.mjs";
+
 import { e2eUsers } from "./support/fixtures";
 import { signIn } from "./support/login";
 
@@ -11,6 +15,17 @@ test.describe.configure({ mode: "serial" });
 async function choose(select: Locator, text: string) {
   const value = await select.locator("option", { hasText: text }).first().getAttribute("value");
   await select.selectOption(value!);
+}
+
+/** Counts the owner's categories directly in the LOCAL database. */
+async function categoryCount(ownerId: string): Promise<number> {
+  const db = new pg.Client({ connectionString: readLocalSupabase().migrationDatabaseUrl.replace(/\?.*$/, "") });
+  await db.connect();
+  try {
+    return (await db.query("SELECT count(*)::int AS n FROM finora.categories WHERE owner_id = $1", [ownerId])).rows[0].n;
+  } finally {
+    await db.end();
+  }
 }
 
 const balanceOn = (page: Page) => page.getByText("Posted balance").locator("xpath=following-sibling::p[1]");
@@ -86,6 +101,25 @@ test.describe("accounts and transactions (owner)", () => {
     await page.getByLabel("Amount", { exact: true }).fill("10");
     await page.getByRole("button", { name: "Create account" }).click();
     await expect(page.locator("form").getByRole("alert")).toHaveText("You already have an account with that name");
+  });
+
+  test("viewing pages creates no categories; defaults are added only on request", async ({ page }) => {
+    const ownerId = users.owner.ownerId;
+    expect(await categoryCount(ownerId)).toBe(0);
+    await page.goto("/transactions/new");
+    await expect(page.getByText(/no active income or expense categories/)).toBeVisible();
+    await page.goto("/categories");
+    await expect(page.getByText("No categories yet")).toBeVisible();
+    await page.reload();
+    expect(await categoryCount(ownerId)).toBe(0);
+
+    await page.getByRole("button", { name: "Add default categories" }).click();
+    await expect(page.getByRole("region", { name: "Income categories" })).toContainText("Salary");
+    const created = await categoryCount(ownerId);
+    expect(created).toBeGreaterThan(0);
+    await page.goto("/transactions/new");
+    await page.goto("/categories");
+    expect(await categoryCount(ownerId)).toBe(created);
   });
 
   test("record income, an expense and a transfer", async ({ page }) => {

@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 
 import { requireOwner } from "@/server/auth/session";
 import { finance } from "@/server/finance";
@@ -30,6 +31,19 @@ export async function renameCategoryAction(_prev: ActionState, formData: FormDat
   }
   revalidatePath("/categories");
   return { message: "Renamed." };
+}
+
+/**
+ * Explicit setup of the default categories for the signed-in owner (a POST
+ * from a button; never run while rendering a page). Idempotent.
+ */
+export async function initializeDefaultCategoriesAction(formData: FormData): Promise<void> {
+  const owner = await requireOwner();
+  await finance.initializeDefaultCategories(owner);
+  revalidatePath("/categories");
+  revalidatePath("/transactions/new");
+  const back = formData.get("returnTo");
+  if (back === "/transactions/new") redirect(back);
 }
 
 export async function setCategoryArchivedAction(formData: FormData): Promise<void> {

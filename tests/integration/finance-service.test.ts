@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 
-import { FinanceValidationError } from "@/domain/finance";
+import { DEFAULT_CATEGORIES, FinanceValidationError } from "@/domain/finance";
 import { parseLedgerDate } from "@/domain/ledger";
 import type { AuthorizedOwner } from "@/server/auth/types";
 import { createPrismaClient } from "@/server/db/client";
@@ -26,6 +26,7 @@ let seededA: SeededOwner;
 let seededB: SeededOwner;
 let ownerA: AuthorizedOwner;
 let ownerB: AuthorizedOwner;
+const extraOwners: string[] = [];
 
 const key = () => randomUUID();
 const today = "2026-10-25";
@@ -72,12 +73,12 @@ beforeAll(async () => {
   seededB = await seedOwner(admin);
   ownerA = await authorize(prisma, seededA.subject);
   ownerB = await authorize(prisma, seededB.subject);
-  await finance.ensureDefaultCategories(ownerA);
-  await finance.ensureDefaultCategories(ownerB);
+  await finance.initializeDefaultCategories(ownerA);
+  await finance.initializeDefaultCategories(ownerB);
 });
 
 afterAll(async () => {
-  await deleteOwners(admin, [seededA, seededB].filter(Boolean).map((o) => o.ownerId));
+  await deleteOwners(admin, [...[seededA, seededB].filter(Boolean).map((o) => o.ownerId), ...extraOwners]);
   await admin.end();
   await prisma.$disconnect();
 });
@@ -558,5 +559,119 @@ describe("owner isolation", () => {
       finance.recordTransaction(ownerB, { kind: "income", amount: "1", date: today, destinationAccountId: bAccount.id, categoryId: aCategory.id, idempotencyKey: key() }),
     ).rejects.toMatchObject({ issues: [expect.objectContaining({ field: "categoryId" })] });
     expect(await balanceOf(ownerA, aAccount.id)).toBe("99.00");
+  });
+});
+
+describe("default categories (explicit setup only)", () => {
+  async function freshOwner() {
+    const seeded = await seedOwner(admin);
+    extraOwners.push(seeded.ownerId);
+    return { seeded, owner: await authorize(prisma, seeded.subject) };
+  }
+  const categoryCount = async (ownerId: string) =>
+    (await admin.query("SELECT count(*)::int AS n FROM finora.categories WHERE owner_id = $1", [ownerId])).rows[0].n as number;
+
+  it("is never triggered by reads", async () => {
+    const { seeded, owner } = await freshOwner();
+    expect(await finance.listCategories(owner)).toEqual([]);
+    await finance.listAccounts(owner);
+    await finance.listTransactions(owner);
+    expect(await categoryCount(seeded.ownerId)).toBe(0);
+  });
+
+  it("creates the defaults once and is idempotent", async () => {
+    const { seeded, owner } = await freshOwner();
+    expect(await finance.initializeDefaultCategories(owner)).toEqual({ created: DEFAULT_CATEGORIES.length });
+    expect(await finance.initializeDefaultCategories(owner)).toEqual({ created: 0 });
+    expect(await categoryCount(seeded.ownerId)).toBe(DEFAULT_CATEGORIES.length);
+  });
+
+  it("never touches an owner who already has categories (custom ones are preserved)", async () => {
+    const { seeded, owner } = await freshOwner();
+    await finance.createCategory(owner, { name: "Freelance", kind: "income" });
+    expect(await finance.initializeDefaultCategories(owner)).toEqual({ created: 0 });
+    expect((await finance.listCategories(owner)).map((c) => c.name)).toEqual(["Freelance"]);
+    expect(await categoryCount(seeded.ownerId)).toBe(1);
+  });
+
+  it("creates exactly one set under concurrent requests, for that owner only", async () => {
+    const { seeded, owner } = await freshOwner();
+    const pool = createPrismaClient(inject("local").appDatabaseUrl, 6);
+    try {
+      const results = await Promise.all(Array.from({ length: 6 }, () => financeFor(pool).initializeDefaultCategories(owner)));
+      expect(results.reduce((sum, r) => sum + r.created, 0)).toBe(DEFAULT_CATEGORIES.length);
+    } finally {
+      await pool.$disconnect();
+    }
+    expect(await categoryCount(seeded.ownerId)).toBe(DEFAULT_CATEGORIES.length);
+    expect(await categoryCount(seededB.ownerId)).toBe((await finance.listCategories(ownerB)).length);
+  });
+});
+
+describe("account names are unique per owner regardless of letter case", () => {
+  it("refuses a name that differs only by case, on create and rename", async () => {
+    await account(ownerA, "Joint Savings");
+    await expect(account(ownerA, "JOINT savings")).rejects.toMatchObject({ reason: "account-name-taken" });
+    const other = await account(ownerA, "Other Savings");
+    await expect(finance.updateAccount(ownerA, other.id, { name: "joint SAVINGS", type: "bank" })).rejects.toMatchObject({
+      reason: "account-name-taken",
+    });
+    // Renaming an account to a new case of its own name is fine.
+    await finance.updateAccount(ownerA, other.id, { name: "OTHER savings", type: "bank" });
+  });
+
+  it("lets different owners use the same name", async () => {
+    await account(ownerA, "Shared Name");
+    await expect(account(ownerB, "shared NAME")).resolves.toMatchObject({ name: "shared NAME" });
+  });
+
+  it("compares names exactly, not as patterns", async () => {
+    await account(ownerA, "A_c");
+    await expect(account(ownerA, "Abc")).resolves.toMatchObject({ name: "Abc" });
+    await account(ownerA, "100%");
+    await expect(account(ownerA, "100x")).resolves.toMatchObject({ name: "100x" });
+  });
+
+  it("creates exactly one account when case variants race", async () => {
+    const pool = createPrismaClient(inject("local").appDatabaseUrl, 6);
+    try {
+      const names = ["Race Name", "RACE NAME", "race name", "Race name", "rACE nAME", "RaCe NaMe"];
+      const results = await Promise.allSettled(
+        names.map((name) => financeFor(pool).createAccount(ownerA, { name, type: "bank", idempotencyKey: key() })),
+      );
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      for (const r of results) {
+        if (r.status === "rejected") expect(r.reason).toMatchObject({ reason: "account-name-taken" });
+      }
+    } finally {
+      await pool.$disconnect();
+    }
+    const { rows } = await admin.query(
+      "SELECT count(*)::int AS n FROM finora.financial_accounts WHERE owner_id = $1 AND lower(name) = 'race name'",
+      [seededA.ownerId],
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
+  it("reports the database's case-insensitive index as a friendly conflict when the app check is skipped", async () => {
+    await account(ownerA, "Backstop");
+    const skipping = financeFor(prisma, (stores) => ({
+      ledger: stores.ledger,
+      finance: new Proxy(stores.finance, {
+        get(target, prop, receiver) {
+          if (prop === "accountNameTaken") return async () => false;
+          const value = Reflect.get(target, prop, receiver) as unknown;
+          return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+        },
+      }) as FinanceStore,
+    }));
+    const before = await counts(seededA.ownerId);
+    const error = await skipping
+      .createAccount(ownerA, { name: "BACKSTOP", type: "bank", idempotencyKey: key() })
+      .then(() => null, (e: unknown) => e as Error);
+    expect(error).toBeInstanceOf(FinanceConflictError);
+    expect(error?.message).toBe("You already have an account with that name");
+    expect(error?.message).not.toMatch(/financial_accounts|unique|constraint|SQL/i);
+    expect(await counts(seededA.ownerId)).toEqual(before); // the ledger account was rolled back too
   });
 });

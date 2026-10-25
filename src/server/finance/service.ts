@@ -310,6 +310,9 @@ export function createFinanceService(run: FinanceRunner) {
           });
           issues.throwIfAny();
         }
+        // Serialise same-name requests (any letter case) for a friendly error;
+        // the case-insensitive unique index is the backstop.
+        await stores.finance.lockKey(`account-name:${name!.toLowerCase()}`);
         if (await stores.finance.accountNameTaken(name!)) throw new FinanceConflictError("account-name-taken");
 
         const id = randomUUID();
@@ -340,6 +343,7 @@ export function createFinanceService(run: FinanceRunner) {
       issues.throwIfAny();
       return inTransaction(owner, async ({ finance }) => {
         const account = await mustFindAccount(finance, id, true);
+        await finance.lockKey(`account-name:${name!.toLowerCase()}`);
         if (await finance.accountNameTaken(name!, account.id)) throw new FinanceConflictError("account-name-taken");
         await finance.updateAccount(account.id, { name: name!, type: type! });
       });
@@ -448,13 +452,17 @@ export function createFinanceService(run: FinanceRunner) {
     },
 
     /**
-     * Gives a new owner the default categories, once: only while the owner
-     * has no categories at all, so renamed or archived ones never come back.
+     * Explicit, idempotent setup: gives the owner the default categories, but
+     * only while the owner has no categories at all, so custom, renamed or
+     * archived ones are never touched and defaults never come back. Runs in
+     * one owner-scoped transaction under a per-owner lock, so concurrent
+     * calls create one set. Never called from page rendering.
      */
-    async ensureDefaultCategories(owner: AuthorizedOwner): Promise<void> {
+    async initializeDefaultCategories(owner: AuthorizedOwner): Promise<{ readonly created: number }> {
       return inTransaction(owner, async ({ finance }) => {
         await finance.lockKey("default-categories");
-        if ((await finance.listCategories()).length === 0) await finance.insertCategoriesIfMissing(DEFAULT_CATEGORIES);
+        if ((await finance.listCategories()).length > 0) return { created: 0 };
+        return { created: await finance.insertCategoriesIfMissing(DEFAULT_CATEGORIES) };
       });
     },
 

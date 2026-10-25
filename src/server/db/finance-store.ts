@@ -12,7 +12,38 @@ import type {
 } from "@/server/finance/store";
 
 import type { Prisma } from "./generated/client";
+import { FinanceConflictError } from "@/server/finance/errors";
+import { sqlStates } from "@/server/ledger/database-errors";
+
 import type { ScopedTx } from "./scope";
+
+/** Unique indexes that mean "this account name is taken" (case-insensitive and exact). */
+const ACCOUNT_NAME_INDEXES = ["financial_accounts_owner_name_ci_key", "financial_accounts_owner_name_key"];
+
+/**
+ * True for a unique violation on one of `indexes`. Prisma's driver-adapter
+ * errors carry the index name in nested metadata; only that is inspected.
+ */
+function isUniqueViolation(error: unknown, indexes: readonly string[]): boolean {
+  if (!sqlStates(error).includes("23505")) return false;
+  let text = "";
+  try {
+    text = JSON.stringify((error as { meta?: unknown }).meta ?? {});
+  } catch {
+    return false;
+  }
+  return indexes.some((index) => text.includes(index));
+}
+
+/** Runs a write, turning an account-name unique violation into the friendly conflict. */
+async function withNameConflict<T>(write: () => Promise<T>): Promise<T> {
+  try {
+    return await write();
+  } catch (error) {
+    if (isUniqueViolation(error, ACCOUNT_NAME_INDEXES)) throw new FinanceConflictError("account-name-taken");
+    throw error;
+  }
+}
 
 const toDate = (date: LedgerDate) => new Date(`${date}T00:00:00.000Z`);
 const fromDate = (date: Date) => parseLedgerDate(date.toISOString().slice(0, 10));
@@ -127,10 +158,14 @@ export class PrismaFinanceStore implements FinanceStore {
   }
 
   async accountNameTaken(name: string, exceptId?: string): Promise<boolean> {
-    const count = await this.tx.financialAccount.count({
-      where: { name: { equals: name, mode: "insensitive" }, ...(exceptId ? { NOT: { id: exceptId } } : {}) },
-    });
-    return count > 0;
+    // Same comparison as the financial_accounts_owner_name_ci_key index
+    // (lower(name)); not ILIKE, where "_" and "%" would act as wildcards.
+    const rows = await this.tx.$queryRaw<{ taken: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1 FROM finora.financial_accounts
+         WHERE lower(name) = lower(${name}) AND id IS DISTINCT FROM ${exceptId ?? null}::uuid
+      ) AS taken`;
+    return rows[0]?.taken === true;
   }
 
   async insertAccount(row: {
@@ -142,15 +177,14 @@ export class PrismaFinanceStore implements FinanceStore {
     creationKey: string;
     creationFingerprint: string;
   }): Promise<FinancialAccountRecord> {
-    const created = await this.tx.financialAccount.create({
-      data: { ...row, ownerId: this.ownerId },
-      select: accountSelect,
-    });
+    const created = await withNameConflict(() =>
+      this.tx.financialAccount.create({ data: { ...row, ownerId: this.ownerId }, select: accountSelect }),
+    );
     return toAccount(created);
   }
 
   async updateAccount(id: string, changes: { name: string; type: FinancialAccountType }): Promise<void> {
-    await this.tx.financialAccount.updateMany({ where: { id }, data: changes });
+    await withNameConflict(() => this.tx.financialAccount.updateMany({ where: { id }, data: changes }));
   }
 
   async setAccountArchived(id: string, archived: boolean): Promise<void> {
@@ -186,11 +220,12 @@ export class PrismaFinanceStore implements FinanceStore {
     return this.tx.category.create({ data: { ...row, ownerId: this.ownerId }, select: categorySelect });
   }
 
-  async insertCategoriesIfMissing(rows: readonly { name: string; kind: CategoryKind }[]): Promise<void> {
-    await this.tx.category.createMany({
+  async insertCategoriesIfMissing(rows: readonly { name: string; kind: CategoryKind }[]): Promise<number> {
+    const { count } = await this.tx.category.createMany({
       data: rows.map((row) => ({ ...row, ownerId: this.ownerId })),
       skipDuplicates: true,
     });
+    return count;
   }
 
   async renameCategory(id: string, name: string): Promise<void> {

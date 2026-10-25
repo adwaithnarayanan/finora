@@ -91,8 +91,8 @@ export interface FinanceStore {
   findCategory(id: string): Promise<CategoryRecord | null>;
   categoryNameTaken(kind: CategoryKind, name: string, exceptId?: string): Promise<boolean>;
   insertCategory(row: { name: string; kind: CategoryKind }): Promise<CategoryRecord>;
-  /** Inserts the ones that do not exist yet (by kind and name). */
-  insertCategoriesIfMissing(rows: readonly { name: string; kind: CategoryKind }[]): Promise<void>;
+  /** Inserts the ones that do not exist yet (by kind and name); returns how many were inserted. */
+  insertCategoriesIfMissing(rows: readonly { name: string; kind: CategoryKind }[]): Promise<number>;
   renameCategory(id: string, name: string): Promise<void>;
   setCategoryArchived(id: string, archived: boolean): Promise<void>;
   findCategoryLedgerAccount(categoryId: string, currencyCode: string): Promise<string | null>;

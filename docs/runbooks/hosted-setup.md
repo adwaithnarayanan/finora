@@ -22,6 +22,12 @@ export MIGRATION_DATABASE_URL='postgresql://postgres:…@<direct-host>:5432/post
 npm run db:migrate:deploy
 ```
 
+If `20261025000400_account_name_case_insensitive` fails with "account names
+differ only by letter case", nothing was changed. Run the hint query from the
+error, rename the affected accounts in the app (or with the owner's
+agreement), then mark the failed attempt rolled back and deploy again:
+`npx prisma migrate resolve --rolled-back 20261025000400_account_name_case_insensitive && npm run db:migrate:deploy`.
+
 Set the runtime role's login password (generate a long random value; store it
 only in the hosting provider's secret settings):
 

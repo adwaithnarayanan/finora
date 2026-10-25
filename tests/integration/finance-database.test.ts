@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 import type pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -66,7 +68,7 @@ beforeAll(async () => {
   b = await seedOwner(admin);
   ownerA = await authorize(prisma, a.subject);
   ownerB = await authorize(prisma, b.subject);
-  await finance.ensureDefaultCategories(ownerA);
+  await finance.initializeDefaultCategories(ownerA);
   const bank = await finance.createAccount(ownerA, {
     name: "Raw bank",
     type: "bank",
@@ -258,5 +260,65 @@ describe("owner isolation (RLS and composite keys)", () => {
       app.query("UPDATE finora.financial_accounts SET name = 'Hijacked' WHERE id = $1", [bAccountId]),
     );
     expect(updated.rowCount).toBe(0);
+  });
+});
+
+describe("case-insensitive account-name index", () => {
+  it("rejects a case variant even for the migration role", async () => {
+    await expect(
+      admin.query(
+        `INSERT INTO finora.financial_accounts (owner_id, name, type, currency_code, ledger_account_id, creation_key, creation_fingerprint)
+         SELECT owner_id, upper(name), type, currency_code, ledger_account_id, 'raw-dup', repeat('0', 64)
+           FROM finora.financial_accounts WHERE id = $1`,
+        [bankId],
+      ),
+    ).rejects.toThrow(/financial_accounts_owner_name_ci_key|financial_accounts_ledger_account_key/);
+    // Isolate the name rule: a fresh ledger account, same name in another case.
+    await admin.query("BEGIN");
+    try {
+      const { rows } = await admin.query(
+        "INSERT INTO finora.ledger_accounts (owner_id, name, kind, currency_code) VALUES ($1, 'itest:ci-probe', 'asset', 'INR') RETURNING id::text",
+        [a.ownerId],
+      );
+      await expect(
+        admin.query(
+          `INSERT INTO finora.financial_accounts (owner_id, name, type, currency_code, ledger_account_id, creation_key, creation_fingerprint)
+           VALUES ($1, 'RAW BANK', 'bank', 'INR', $2, 'raw-ci', repeat('0', 64))`,
+          [a.ownerId, rows[0].id],
+        ),
+      ).rejects.toThrow(/financial_accounts_owner_name_ci_key/);
+    } finally {
+      await admin.query("ROLLBACK");
+    }
+  });
+
+  it("the migration refuses to run, changing nothing, when existing names collide", async () => {
+    const migration = readFileSync(
+      path.join(process.cwd(), "prisma/migrations/20261025000400_account_name_case_insensitive/migration.sql"),
+      "utf8",
+    );
+    // Recreate the pre-migration state inside a transaction that is always rolled back.
+    await admin.query("BEGIN");
+    try {
+      await admin.query("DROP INDEX finora.financial_accounts_owner_name_ci_key");
+      const { rows } = await admin.query(
+        "INSERT INTO finora.ledger_accounts (owner_id, name, kind, currency_code) VALUES ($1, 'itest:ci-conflict', 'asset', 'INR') RETURNING id::text",
+        [a.ownerId],
+      );
+      await admin.query(
+        `INSERT INTO finora.financial_accounts (owner_id, name, type, currency_code, ledger_account_id, creation_key, creation_fingerprint)
+         VALUES ($1, 'RAW BANK', 'bank', 'INR', $2, 'raw-conflict', repeat('0', 64))`,
+        [a.ownerId, rows[0].id],
+      );
+      await admin.query("SAVEPOINT before_migration");
+      await expect(admin.query(migration)).rejects.toThrow(/1 group\(s\) of account names differ only by letter case/);
+      await admin.query("ROLLBACK TO SAVEPOINT before_migration");
+      const index = await admin.query("SELECT to_regclass('finora.financial_accounts_owner_name_ci_key') AS idx");
+      expect(index.rows[0].idx).toBeNull(); // nothing was created
+    } finally {
+      await admin.query("ROLLBACK");
+    }
+    const restored = await admin.query("SELECT to_regclass('finora.financial_accounts_owner_name_ci_key')::text AS idx");
+    expect(restored.rows[0].idx).toBe("finora.financial_accounts_owner_name_ci_key");
   });
 });

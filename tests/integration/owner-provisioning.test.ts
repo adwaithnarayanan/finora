@@ -18,11 +18,15 @@ import {
 import { linkSimulatedGoogleIdentity, randomGoogleId } from "../support/google-simulation";
 
 import { adminClient, deleteOwners } from "./support/db";
+import { createMigratedScratchDatabase } from "./support/scratch-db";
 
 /**
  * The operator provisioning workflow against the real local Auth server and
- * database. The single-owner rule is exercised on its own: these tests run
- * only when the database has no owners (they never touch existing data).
+ * real PostgreSQL. The single-owner rule is database-wide, so the finora side
+ * runs in a scratch database with every migration applied (`db`): the tests
+ * neither depend on nor touch owners already in the local database. Auth is
+ * the real local Auth server; Auth-schema writes (session revocation, the
+ * simulated Google identity) use the main database (`authDb`).
  * Email/password is the active method; the deferred Google path is kept
  * working with `method: "google"`.
  */
@@ -32,6 +36,8 @@ const adminAuth = createClient(local.apiUrl, local.secretKey, {
   auth: { persistSession: false, autoRefreshToken: false },
 }).auth.admin;
 let db: pg.Client;
+let authDb: pg.Client;
+let dropScratch: () => Promise<void>;
 const emails: string[] = [];
 const ownerIds: string[] = [];
 
@@ -61,8 +67,9 @@ async function ownerCount() {
 }
 
 beforeAll(async () => {
-  db = await adminClient();
-  if ((await ownerCount()) > 0) throw new Error("owner-provisioning tests need a database without owners");
+  authDb = await adminClient();
+  ({ client: db, drop: dropScratch } = await createMigratedScratchDatabase("finora_itest_provisioning"));
+  if ((await ownerCount()) > 0) throw new Error("the scratch database must start without owners");
 });
 
 afterEach(async () => {
@@ -80,10 +87,14 @@ afterAll(async () => {
     const user = await userByEmail(email);
     if (user) await adminAuth.deleteUser(user.id);
   }
-  await db.end();
+  await dropScratch?.();
+  await authDb?.end();
 });
 
+/** Finora data in the scratch database. */
 const ctx = () => ({ admin: adminAuth, db });
+/** Same, for steps that also write the Auth schema (set-password revokes sessions). */
+const authCtx = () => ({ admin: adminAuth, db: authDb });
 const strongPassword = () => `Prov-${randomUUID().slice(0, 8)}-Aa1`;
 
 async function canSignIn(email: string, password: string) {
@@ -105,7 +116,7 @@ function cli(args: string[], stdin?: string) {
 /** prepare -> set-password -> complete, for the active (password) method. */
 async function passwordOwner(email = newEmail(), password = strongPassword(), options = {}) {
   const { userId } = await prepare({ ...ctx(), email, ...options });
-  await setPassword({ ...ctx(), email, password });
+  await setPassword({ ...authCtx(), email, password });
   const result = await complete({ ...ctx(), email, ...("purpose" in options ? { allowAdditional: true } : {}) });
   ownerIds.push(result.ownerId);
   return { email, password, userId, ownerId: result.ownerId as string };
@@ -131,14 +142,14 @@ describe("set-password", () => {
   it("sets a password the user can sign in with, after validating it", async () => {
     const email = newEmail();
     await prepare({ ...ctx(), email });
-    await expect(setPassword({ ...ctx(), email, password: "too-weak" })).rejects.toThrow(/Password rejected/);
+    await expect(setPassword({ ...authCtx(), email, password: "too-weak" })).rejects.toThrow(/Password rejected/);
     const password = strongPassword();
-    await setPassword({ ...ctx(), email, password });
+    await setPassword({ ...authCtx(), email, password });
     expect(await canSignIn(email, password)).toBe(true);
   });
 
   it("refuses unknown users", async () => {
-    await expect(setPassword({ ...ctx(), email: newEmail(), password: strongPassword() })).rejects.toThrow(/No Supabase user/);
+    await expect(setPassword({ ...authCtx(), email: newEmail(), password: strongPassword() })).rejects.toThrow(/No Supabase user/);
   });
 
   it("through the CLI: reads the password from stdin and never prints it", async () => {
@@ -206,7 +217,7 @@ describe("complete (email/password)", () => {
     const secondEmail = newEmail();
     await expect(prepare({ ...ctx(), email: secondEmail })).rejects.toThrow(/An owner already exists/);
     const { userId: secondId } = await prepare({ ...ctx(), email: secondEmail, purpose: "relink" });
-    await setPassword({ ...ctx(), email: secondEmail, password: strongPassword() });
+    await setPassword({ ...authCtx(), email: secondEmail, password: strongPassword() });
     await expect(complete({ ...ctx(), email: secondEmail })).rejects.toThrow(/An owner already exists/);
     expect(await mapping(secondId)).toBeNull();
     expect((await userByEmail(secondEmail))!.app_metadata[APPROVED_PASSWORD_EMAIL_KEY]).toBeUndefined();
@@ -216,10 +227,10 @@ describe("complete (email/password)", () => {
   it("moves a Google-provisioned owner to email/password without changing the owner id", async () => {
     const email = newEmail();
     const { userId } = await prepare({ ...ctx(), email });
-    await linkSimulatedGoogleIdentity(db, { id: userId, email });
+    await linkSimulatedGoogleIdentity(authDb, { id: userId, email });
     const google = await complete({ ...ctx(), email, method: "google" });
     ownerIds.push(google.ownerId);
-    await setPassword({ ...ctx(), email, password: strongPassword() });
+    await setPassword({ ...authCtx(), email, password: strongPassword() });
     const password = await complete({ ...ctx(), email });
     expect(password).toMatchObject({ ownerId: google.ownerId, created: false });
     expect(await ownerCount()).toBe(1);
@@ -239,7 +250,7 @@ describe("complete (deferred Google method)", () => {
   ])("refuses %s", async (_label, options, error) => {
     const email = newEmail();
     const { userId } = await prepare({ ...ctx(), email });
-    await linkSimulatedGoogleIdentity(db, { id: userId, email }, options);
+    await linkSimulatedGoogleIdentity(authDb, { id: userId, email }, options);
     await expect(complete({ ...ctx(), email, method: "google" })).rejects.toThrow(error);
     expect(await mapping(userId)).toBeNull();
   });
@@ -247,7 +258,7 @@ describe("complete (deferred Google method)", () => {
   it("approves the sole Google identity", async () => {
     const email = newEmail();
     const { userId } = await prepare({ ...ctx(), email });
-    const googleId = await linkSimulatedGoogleIdentity(db, { id: userId, email });
+    const googleId = await linkSimulatedGoogleIdentity(authDb, { id: userId, email });
     const result = await complete({ ...ctx(), email, method: "google" });
     ownerIds.push(result.ownerId);
     expect((await userByEmail(email))!.app_metadata[APPROVED_GOOGLE_ID_KEY]).toBe(googleId);
@@ -265,7 +276,7 @@ describe("relink", () => {
     const newAddress = newEmail();
     const { userId: newId } = await prepare({ ...ctx(), email: newAddress, purpose: "relink" });
     await expect(relink({ ...ctx(), email: newAddress })).rejects.toThrow(/no password is set yet/);
-    await setPassword({ ...ctx(), email: newAddress, password: strongPassword() });
+    await setPassword({ ...authCtx(), email: newAddress, password: strongPassword() });
 
     const result = await relink({ ...ctx(), email: newAddress });
     expect(result).toMatchObject({ ownerId: old.ownerId, previousUserId: old.userId, previousApprovalCleared: true });

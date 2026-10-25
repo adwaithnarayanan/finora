@@ -30,7 +30,11 @@ invariants are unchanged.
 ### Model (migration `20261025000300_accounts_and_transactions`)
 
 - **`financial_accounts`**
-  - Columns: `name` (unique per owner, case-insensitive in the service),
+  - Columns: `name` (unique per owner regardless of letter case: the service
+    checks `lower(name)` under a per-name advisory lock for a friendly error,
+    and the unique index `financial_accounts_owner_name_ci_key` on
+    `(owner_id, lower(name))` enforces it; migration
+    `20261025000400_account_name_case_insensitive`),
     `type` (`bank | cash`), `currency_code`, `ledger_account_id`, the creation
     key and fingerprint, timestamps, and `archived_at`.
   - Each account is backed by exactly one **asset** ledger account of the
@@ -128,7 +132,11 @@ same equity account.
 - **Categories:**
   - *Create* and *rename*.
   - *Archive* and *restore*: archived categories can't take new transactions.
-  - The defaults are added once, while an owner has no categories at all.
+  - Defaults are added only by an explicit, owner-authorised action
+    ("Add default categories", `initializeDefaultCategories`). It is
+    idempotent, runs in one transaction under a per-owner lock, and does
+    nothing once the owner has any category. Rendering a page never creates
+    categories.
 - **Transactions:**
   - *Record:* `recordTransaction`.
   - *Edit details:* `payee` and `note` only. They have no accounting effect,
@@ -188,6 +196,15 @@ same equity account.
   - `finora.apply_owner_isolation()` on all five tables.
   - The catalog tests pin the grants and cover RLS, owner-safe foreign keys
     and `owner_id` in every unique index.
+
+### Case-insensitive names: migration safety
+
+Migration `20261025000400` first counts owner/name groups that differ only
+by letter case. If any exist it raises an error (with a hint query) and
+changes nothing; accounts are never renamed or deleted automatically. Prisma
+cannot express expression indexes, so the index lives only in SQL and
+`npm run db:local:drift` does not see it; integration tests assert that it
+exists and is effective (and that the conflict guard fires).
 
 ## Consequences
 

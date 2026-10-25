@@ -96,8 +96,8 @@ see [`docs/runbooks/hosted-setup.md`](docs/runbooks/hosted-setup.md).
   category). Each transaction can have its payee or note edited, or be voided
   through a ledger reversal. Opening balances are corrected from the account
   page (reversal plus replacement).
-- `/categories`: income and expense categories; defaults are added the first
-  time.
+- `/categories`: income and expense categories; a new owner can add a
+  default set with one click (pages never create categories by themselves).
 
 Amounts are typed as decimals, parsed exactly, and shown in `en-IN` format;
 INR is the default currency. The accounting treatment is in

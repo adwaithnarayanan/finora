@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { setCategoryArchivedAction } from "@/features/categories/actions";
 import { CreateCategoryForm, RenameCategoryForm } from "@/features/categories/category-forms";
+import { DefaultCategoriesButton } from "@/features/categories/default-categories-button";
 import { requireOwner } from "@/server/auth/session";
 import { type CategoryRecord, finance } from "@/server/finance";
 
@@ -50,10 +51,21 @@ function CategoryGroup({ title, categories }: { title: string; categories: reado
 
 async function Categories() {
   const owner = await requireOwner();
-  await finance.ensureDefaultCategories(owner);
+  // Read-only: rendering never creates categories (defaults are added on request).
   const categories = await finance.listCategories(owner);
   return (
     <div className="grid gap-8">
+      {categories.length === 0 ? (
+        <div className="grid gap-3 rounded-lg border border-dashed p-6">
+          <p className="font-medium">No categories yet</p>
+          <p className="text-sm text-muted-foreground">
+            Start with a standard set (Salary, Groceries, Rent and more), or add your own below.
+          </p>
+          <div>
+            <DefaultCategoriesButton />
+          </div>
+        </div>
+      ) : null}
       <CreateCategoryForm />
       <CategoryGroup title="Expense categories" categories={categories.filter((c) => c.kind === "expense")} />
       <CategoryGroup title="Income categories" categories={categories.filter((c) => c.kind === "income")} />
