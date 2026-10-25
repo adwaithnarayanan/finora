@@ -5,6 +5,7 @@ import path from "node:path";
 import type pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { ACCOUNT_LEDGER_KIND, FINANCIAL_ACCOUNT_TYPES } from "@/domain/finance";
 import type { AuthorizedOwner } from "@/server/auth/types";
 import type { TransactionRecord } from "@/server/finance/store";
 
@@ -260,6 +261,189 @@ describe("owner isolation (RLS and composite keys)", () => {
       app.query("UPDATE finora.financial_accounts SET name = 'Hijacked' WHERE id = $1", [bAccountId]),
     );
     expect(updated.rowCount).toBe(0);
+  });
+});
+
+describe("account classes (ADR 0008): type and ledger kind agree", () => {
+  let cardId: string;
+  let cardLedgerId: string;
+  let bCardLedgerId: string;
+  let equityId: string;
+  let ledgerSeq = 0;
+
+  /** A new ledger account of `kind` for owner A, inserted as finora_app. */
+  const newLedger = (kind: string, ownerId = a.ownerId) =>
+    app
+      .query("INSERT INTO finora.ledger_accounts (owner_id, name, kind, currency_code) VALUES ($1, $2, $3, 'INR') RETURNING id::text", [
+        ownerId,
+        `itest:class:${randomUUID()}:${ledgerSeq++}`,
+        kind,
+      ])
+      .then(({ rows }) => rows[0].id as string);
+
+  const insertAccount = (type: string, ledgerId: string, ownerId = a.ownerId) =>
+    app.query(
+      `INSERT INTO finora.financial_accounts (owner_id, name, name_key, type, currency_code, ledger_account_id, creation_key, creation_fingerprint)
+       VALUES ($1, $2, $2, $3, 'INR', $4, $5, repeat('0', 64))`,
+      [ownerId, `class ${randomUUID()}`, type, ledgerId, `itest-${randomUUID()}`],
+    );
+
+  const insertOpening = (entry: string, accountId: string, amount: number) =>
+    app.query(
+      `INSERT INTO finora.transactions (owner_id, kind, occurred_on, amount_minor, currency_code, destination_account_id, journal_entry_id)
+       VALUES ($1, 'opening_balance', $2, $3, 'INR', $4, $5)`,
+      [a.ownerId, today, amount, accountId, entry],
+    );
+
+  beforeAll(async () => {
+    const card = await finance.createAccount(ownerA, { name: "Raw card", type: "credit_card", idempotencyKey: randomUUID() });
+    cardId = card.value.id;
+    cardLedgerId = card.value.ledgerAccountId;
+    bCardLedgerId = (await finance.createAccount(ownerB, { name: "B raw card", type: "credit_card", idempotencyKey: randomUUID() })).value
+      .ledgerAccountId;
+    const { rows } = await admin.query(
+      "SELECT ledger_account_id::text AS id FROM finora.system_ledger_accounts WHERE owner_id = $1 AND purpose = 'opening_balance_equity' AND currency_code = 'INR'",
+      [a.ownerId],
+    );
+    equityId = rows[0].id;
+  });
+
+  it("maps every account type exactly as the application does", async () => {
+    const { rows } = await admin.query(
+      `SELECT t::text AS type, finora.financial_account_ledger_kind(t)::text AS kind
+         FROM unnest(enum_range(NULL::finora.financial_account_type)) AS t ORDER BY 1`,
+    );
+    expect([...FINANCIAL_ACCOUNT_TYPES].sort()).toEqual(rows.map((r) => r.type));
+    expect(Object.fromEntries(rows.map((r) => [r.type, r.kind]))).toEqual(ACCOUNT_LEDGER_KIND);
+  });
+
+  it.each([
+    ["a credit card backed by an asset ledger account", "credit_card", "asset"],
+    ["a bank account backed by a liability ledger account", "bank", "liability"],
+    ["a cash account backed by a liability ledger account", "cash", "liability"],
+    ["a credit card backed by an equity ledger account", "credit_card", "equity"],
+    ["a bank account backed by an expense ledger account", "bank", "expense"],
+  ])("refuses %s, even as raw SQL by the runtime role", async (_label, type, kind) => {
+    await expect(
+      asOwner(app, a.ownerId, async () => insertAccount(type, await newLedger(kind))),
+    ).rejects.toThrow(/must be backed by a ledger account of its type's class/);
+  });
+
+  it.each([
+    ["credit_card", "liability"],
+    ["bank", "asset"],
+    ["cash", "asset"],
+  ])("accepts a %s backed by a(n) %s ledger account", async (type, kind) => {
+    await expect(asOwner(app, a.ownerId, async () => insertAccount(type, await newLedger(kind)))).resolves.toBeDefined();
+  });
+
+  it("refuses a card backed by another owner's liability ledger account", async () => {
+    await expect(asOwner(app, a.ownerId, () => insertAccount("credit_card", bCardLedgerId))).rejects.toThrow(
+      /must be backed by a ledger account of its type's class|financial_accounts_ledger_account_fkey/,
+    );
+  });
+
+  it.each([
+    ["a card to a bank account", () => cardId, "bank"],
+    ["a card to cash", () => cardId, "cash"],
+    ["a bank account to a card", () => otherBankId, "credit_card"],
+  ])("refuses changing %s, by the runtime role and by the migration role", async (_label, id, type) => {
+    await expect(
+      asOwner(app, a.ownerId, () => app.query("UPDATE finora.financial_accounts SET type = $1 WHERE id = $2", [type, id()])),
+    ).rejects.toThrow(/an account's type cannot change its class/);
+    await expect(admin.query("UPDATE finora.financial_accounts SET type = $1 WHERE id = $2", [type, id()])).rejects.toThrow(
+      /an account's type cannot change its class/,
+    );
+  });
+
+  it("still allows bank <-> cash, and changes within a card's own type", async () => {
+    await asOwner(app, a.ownerId, () => app.query("UPDATE finora.financial_accounts SET type = 'cash' WHERE id = $1", [otherBankId]));
+    await asOwner(app, a.ownerId, () => app.query("UPDATE finora.financial_accounts SET type = 'bank' WHERE id = $1", [otherBankId]));
+    await asOwner(app, a.ownerId, () =>
+      app.query("UPDATE finora.financial_accounts SET type = 'credit_card', archived_at = now() WHERE id = $1", [cardId]),
+    );
+    await asOwner(app, a.ownerId, () => app.query("UPDATE finora.financial_accounts SET archived_at = NULL WHERE id = $1", [cardId]));
+    const { rows } = await admin.query("SELECT id::text, type::text FROM finora.financial_accounts WHERE id = ANY($1::uuid[]) ORDER BY type", [
+      [otherBankId, cardId],
+    ]);
+    expect(rows.map((r) => r.type)).toEqual(["bank", "credit_card"]);
+  });
+
+  it("accepts a card's opening balance only as Dr equity / Cr card (checked at COMMIT)", async () => {
+    await expect(
+      asOwner(app, a.ownerId, async () => insertOpening(await postedEntry(cardLedgerId, equityId, 1200000), cardId, 1200000)),
+    ).rejects.toThrow(/the journal entry does not match the transaction/);
+    const counted = () => admin.query("SELECT count(*)::int AS n FROM finora.transactions WHERE destination_account_id = $1", [cardId]);
+    expect((await counted()).rows[0].n).toBe(0);
+    await asOwner(app, a.ownerId, async () => insertOpening(await postedEntry(equityId, cardLedgerId, 1200000), cardId, 1200000));
+    expect((await counted()).rows[0].n).toBe(1);
+  });
+
+  it("still accepts an asset's opening balance only as Dr account / Cr equity", async () => {
+    const otherLedgerId = await ledgerIdOf(otherBankId);
+    await expect(
+      asOwner(app, a.ownerId, async () => insertOpening(await postedEntry(equityId, otherLedgerId, 500), otherBankId, 500)),
+    ).rejects.toThrow(/the journal entry does not match the transaction/);
+  });
+
+  it("rejects an unbalanced opening entry for a card (the ledger's own COMMIT check)", async () => {
+    const fresh = (await finance.createAccount(ownerA, { name: "Raw card 2", type: "credit_card", idempotencyKey: randomUUID() })).value;
+    await expect(
+      asOwner(app, a.ownerId, async () => {
+        const { rows } = await app.query(
+          "INSERT INTO finora.journal_entries (owner_id, entry_date, description) VALUES ($1, $2, 'raw') RETURNING id::text",
+          [a.ownerId, today],
+        );
+        await app.query(
+          `INSERT INTO finora.journal_lines (owner_id, entry_id, line_no, account_id, currency_code, side, amount_minor)
+           VALUES ($1, $2, 1, $3, 'INR', 'debit', 100), ($1, $2, 2, $4, 'INR', 'credit', 99)`,
+          [a.ownerId, rows[0].id, equityId, fresh.ledgerAccountId],
+        );
+        await app.query("UPDATE finora.journal_entries SET status = 'posted' WHERE id = $1", [rows[0].id]);
+        await insertOpening(rows[0].id, fresh.id, 100);
+      }),
+    ).rejects.toThrow(/finora\.ledger: /);
+  });
+
+  it("refuses income, expenses and transfers on a card at COMMIT, even with a matching entry", async () => {
+    const groceries = (await finance.listCategories(ownerA)).find((c) => c.name === "Groceries")!;
+    const { rows } = await admin.query(
+      "SELECT ledger_account_id::text AS id FROM finora.category_ledger_accounts WHERE category_id = $1 AND currency_code = 'INR'",
+      [groceries.id],
+    );
+    const expenseLedger =
+      rows[0]?.id ??
+      (await asOwner(app, a.ownerId, async () => {
+        const id = await newLedger("expense");
+        await app.query("INSERT INTO finora.category_ledger_accounts (owner_id, category_id, currency_code, ledger_account_id) VALUES ($1, $2, 'INR', $3)", [
+          a.ownerId,
+          groceries.id,
+          id,
+        ]);
+        return id;
+      }));
+    await expect(
+      asOwner(app, a.ownerId, async () => {
+        const entry = await postedEntry(expenseLedger, cardLedgerId, 150000);
+        await app.query(
+          `INSERT INTO finora.transactions (owner_id, kind, occurred_on, amount_minor, currency_code, source_account_id, category_id, journal_entry_id)
+           VALUES ($1, 'expense', $2, 150000, 'INR', $3, $4, $5)`,
+          [a.ownerId, today, cardId, groceries.id, entry],
+        );
+      }),
+    ).rejects.toThrow(/income, expenses and transfers use bank and cash accounts only/);
+    await expect(
+      asOwner(app, a.ownerId, async () => insertTransfer(await postedEntry(cardLedgerId, bankLedgerId, 500), 500, bankId, cardId)),
+    ).rejects.toThrow(/income, expenses and transfers use bank and cash accounts only/);
+  });
+
+  it("keeps the mapping function private: PUBLIC and the runtime role cannot call it", async () => {
+    await expect(app.query("SELECT finora.financial_account_ledger_kind('bank')")).rejects.toThrow(/permission denied/);
+    const { rows } = await admin.query(
+      `SELECT p.prosecdef, p.provolatile, array_to_string(p.proconfig, ',') AS config
+         FROM pg_proc p WHERE p.oid = 'finora.financial_account_ledger_kind(finora.financial_account_type)'::regprocedure`,
+    );
+    expect(rows).toEqual([{ prosecdef: false, provolatile: "i", config: "search_path=\"\"" }]);
   });
 });
 

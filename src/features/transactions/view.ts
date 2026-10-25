@@ -1,6 +1,6 @@
 import "server-only";
 
-import { RECORD_KIND_LABELS, type RecordKind } from "@/domain/finance";
+import { ACCOUNT_LEDGER_KIND, RECORD_KIND_LABELS, type RecordKind } from "@/domain/finance";
 import type { CategoryRecord, FinancialAccountRecord, TransactionRecord } from "@/server/finance";
 
 import { formatLedgerDate, formatMoney } from "../shared/format";
@@ -15,7 +15,10 @@ export interface TransactionView {
   readonly title: string;
   readonly accounts: string;
   readonly amount: string;
-  /** +1 money in, -1 money out, 0 neither (transfer seen from no account). */
+  /**
+   * The effect on what the owner has: +1 money in, -1 money out (including a
+   * card's opening amount owed), 0 neither (transfer seen from no account).
+   */
   readonly direction: 1 | -1 | 0;
   readonly payee: string | null;
   readonly note: string | null;
@@ -40,6 +43,8 @@ export function toTransactionView(t: TransactionRecord, lookups: Lookups, perspe
   const category = t.categoryId ? (lookups.categories.get(t.categoryId)?.name ?? "Category") : null;
   let direction: 1 | -1 | 0 = t.kind === "expense" ? -1 : t.kind === "transfer" ? 0 : 1;
   if (t.kind === "transfer" && perspective) direction = t.destinationAccountId === perspective ? 1 : -1;
+  const destination = t.destinationAccountId ? lookups.accounts.get(t.destinationAccountId) : undefined;
+  if (t.kind === "opening_balance" && destination && ACCOUNT_LEDGER_KIND[destination.type] === "liability") direction = -1;
   return {
     id: t.id,
     kind: t.kind,

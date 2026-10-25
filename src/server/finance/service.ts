@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import {
+  ACCOUNT_LEDGER_KIND,
   type AccountLifecycle,
   type AccountRef,
   type CategoryRef,
@@ -14,6 +15,7 @@ import {
   accountLifecycle,
   parseAccountName,
   parseAccountType,
+  parseAccountTypeChange,
   parseAmountFor,
   parseCategoryKind,
   parseName,
@@ -95,6 +97,7 @@ function toAccountRef(account: FinancialAccountRecord): AccountRef {
     id: account.id,
     name: account.name,
     ledgerAccountId: account.ledgerAccountId,
+    ledgerKind: ACCOUNT_LEDGER_KIND[account.type],
     currency: account.currency,
     archived: account.archivedAt !== null,
   };
@@ -267,7 +270,8 @@ export function createFinanceService(run: FinanceRunner) {
     },
 
     /**
-     * Creates the account, its asset ledger account and (optionally) its
+     * Creates the account, its ledger account (of the type's class: asset, or
+     * liability for a credit card) and (optionally) its
      * opening balance in one transaction. Retrying with the same key returns
      * the same account; the same key with different details is refused.
      */
@@ -314,6 +318,7 @@ export function createFinanceService(run: FinanceRunner) {
             id: "",
             name: name!.display,
             ledgerAccountId: "",
+            ledgerKind: ACCOUNT_LEDGER_KIND[type!],
             currency,
             archived: false,
           });
@@ -328,7 +333,7 @@ export function createFinanceService(run: FinanceRunner) {
         const id = randomUUID();
         const ledgerAccount = await ledgerOperations.createAccount(stores.ledger, {
           name: ledgerName.account(id),
-          kind: "asset",
+          kind: ACCOUNT_LEDGER_KIND[type!],
           currency: currencyCode as string,
         });
         const account = await stores.finance.insertAccount({
@@ -345,14 +350,20 @@ export function createFinanceService(run: FinanceRunner) {
       });
     },
 
-    /** Name and type only: currency and ledger link never change. */
+    /**
+     * Name and type only: currency and ledger link never change, and the type
+     * only within its class (bank <-> cash; a credit card stays one).
+     */
     async updateAccount(owner: AuthorizedOwner, id: string, input: { readonly name: unknown; readonly type: unknown }): Promise<void> {
       const issues = new IssueCollector();
       const name = issues.capture("name", () => parseAccountName(input.name));
-      const type = issues.capture("type", () => parseAccountType(input.type));
+      issues.capture("type", () => parseAccountType(input.type));
       issues.throwIfAny();
       return inTransaction(owner, async ({ finance }) => {
         const account = await mustFindAccount(finance, id, true);
+        const typeIssues = new IssueCollector();
+        const type = typeIssues.capture("type", () => parseAccountTypeChange(account.type, input.type));
+        typeIssues.throwIfAny();
         await finance.lockKey(`account-name:${name!.key}`);
         if (await finance.accountNameTaken(name!, account.id)) throw new FinanceConflictError("account-name-taken");
         await finance.updateAccount(account.id, { name: name!, type: type! });

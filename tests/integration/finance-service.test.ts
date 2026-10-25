@@ -108,7 +108,7 @@ describe("accounts", () => {
     const usd = await account(ownerA, "USD account", { currency: "USD" });
     expect(usd.currency.code).toBe("USD");
     await expect(account(ownerA, "Gold", { currency: "XAU" })).rejects.toThrow(FinanceValidationError);
-    await expect(account(ownerA, "  ", { type: "credit_card" })).rejects.toMatchObject({
+    await expect(account(ownerA, "  ", { type: "loan" })).rejects.toMatchObject({
       issues: [expect.objectContaining({ field: "name" }), expect.objectContaining({ field: "type" })],
     });
     await expect(account(ownerA, "wallet")).rejects.toThrow(FinanceConflictError); // names are case-insensitive
@@ -804,3 +804,228 @@ describe("account names are unique per owner by comparison key (ADR 0007)", () =
     }
   });
 });
+
+describe("credit cards: liability-backed accounts (ADR 0008)", () => {
+  const card = (owner: AuthorizedOwner, name: string, extra: Record<string, unknown> = {}) =>
+    account(owner, name, { type: "credit_card", ...extra });
+
+  async function ledgerKind(ledgerAccountId: string) {
+    const { rows } = await admin.query("SELECT kind::text AS kind, currency_code FROM finora.ledger_accounts WHERE id = $1", [ledgerAccountId]);
+    return rows[0] as { kind: string; currency_code: string };
+  }
+
+  /** Posted balance of the owner's opening-balance equity account in `currency`, signed to its normal (credit) side. */
+  async function equityBalance(ownerId: string, currency = "INR") {
+    const { rows } = await admin.query(
+      `SELECT coalesce(sum(CASE l.side WHEN 'credit' THEN l.amount_minor ELSE -l.amount_minor END), 0)::text AS n
+         FROM finora.system_ledger_accounts s
+         JOIN finora.journal_lines l ON l.account_id = s.ledger_account_id
+         JOIN finora.journal_entries e ON e.id = l.entry_id AND e.status = 'posted'
+        WHERE s.owner_id = $1 AND s.purpose = 'opening_balance_equity' AND s.currency_code = $2`,
+      [ownerId, currency],
+    );
+    return rows[0].n as string;
+  }
+
+  it("backs bank and cash accounts with asset ledger accounts and credit cards with liability ones", async () => {
+    const bank = await account(ownerA, "Class bank");
+    const cash = await account(ownerA, "Class cash", { type: "cash" });
+    const hdfc = await card(ownerA, "Class card", { currency: "USD" });
+    expect(await ledgerKind(bank.ledgerAccountId)).toEqual({ kind: "asset", currency_code: "INR" });
+    expect(await ledgerKind(cash.ledgerAccountId)).toEqual({ kind: "asset", currency_code: "INR" });
+    expect(hdfc).toMatchObject({ type: "credit_card", currency: { code: "USD" } });
+    expect(await ledgerKind(hdfc.ledgerAccountId)).toEqual({ kind: "liability", currency_code: "USD" });
+    const detail = await finance.getAccount(ownerA, hdfc.id);
+    expect(detail.balance.toDecimalString()).toBe("0.00");
+    expect(detail.lifecycle).toEqual({ canTransact: true, canArchive: true, canRestore: false, canDelete: true });
+  });
+
+  it("opens a card with the amount owed: Dr opening-balance equity, Cr card liability; balance owed is positive", async () => {
+    const { seeded, owner } = await freshOwner();
+    const axis = await account(owner, "Axis Savings", { openingBalance: { amount: "50000", date: "2026-10-01" } });
+    const hdfc = await card(owner, "HDFC Card", { openingBalance: { amount: "12000", date: "2026-10-01" } });
+
+    const assetOpening = (await finance.getAccount(owner, axis.id)).openingBalance!;
+    expect(await lines(assetOpening.journalEntryId)).toEqual([
+      ["asset", "debit", "5000000", "INR"],
+      ["equity", "credit", "5000000", "INR"],
+    ]);
+    const detail = await finance.getAccount(owner, hdfc.id);
+    expect(detail.openingBalance).toMatchObject({ kind: "opening_balance", destinationAccountId: hdfc.id, sourceAccountId: null, categoryId: null });
+    expect(await lines(detail.openingBalance!.journalEntryId)).toEqual([
+      ["equity", "debit", "1200000", "INR"],
+      ["liability", "credit", "1200000", "INR"],
+    ]);
+    expect(detail.balance.toDecimalString()).toBe("12000.00"); // the liability's normal balance: owed
+    expect(await balanceOf(owner, axis.id)).toBe("50000.00");
+    expect(await equityBalance(seeded.ownerId)).toBe(String(5_000_000 - 1_200_000)); // ₹38,000.00, one equity account per currency
+    expect(detail.hasHistory).toBe(true);
+    await expect(finance.deleteAccount(owner, hdfc.id)).rejects.toMatchObject({ reason: "account-has-history" });
+  });
+
+  it("corrects and voids a card's opening balance in the liability direction, never editing the original", async () => {
+    const { owner } = await freshOwner();
+    const hdfc = await card(owner, "Correct card");
+    const { value: first } = await finance.setOpeningBalance(owner, hdfc.id, { amount: "12000", date: "2026-10-01", idempotencyKey: key() });
+    expect(await balanceOf(owner, hdfc.id)).toBe("12000.00");
+
+    const ck = key();
+    const { value: corrected } = await finance.correctOpeningBalance(owner, hdfc.id, { amount: "15000", date: "2026-10-01", idempotencyKey: ck });
+    expect(await balanceOf(owner, hdfc.id)).toBe("15000.00");
+    const original = await finance.getTransaction(owner, first.id);
+    expect(original.replacedByTransactionId).toBe(corrected.id);
+    expect(await lines(first.journalEntryId)).toEqual([
+      ["equity", "debit", "1200000", "INR"],
+      ["liability", "credit", "1200000", "INR"],
+    ]);
+    expect(await lines(original.reversalEntryId!)).toEqual([
+      ["equity", "credit", "1200000", "INR"],
+      ["liability", "debit", "1200000", "INR"],
+    ]);
+    expect(await lines(corrected.journalEntryId)).toEqual([
+      ["equity", "debit", "1500000", "INR"],
+      ["liability", "credit", "1500000", "INR"],
+    ]);
+    expect(await finance.correctOpeningBalance(owner, hdfc.id, { amount: "15000", date: "2026-10-01", idempotencyKey: ck })).toMatchObject({
+      replayed: true,
+      value: { id: corrected.id },
+    });
+
+    const voided = await finance.voidTransaction(owner, corrected.id, { date: today, idempotencyKey: key() });
+    expect(await lines(voided.value.reversalEntryId!)).toEqual([
+      ["equity", "credit", "1500000", "INR"],
+      ["liability", "debit", "1500000", "INR"],
+    ]);
+    expect(await balanceOf(owner, hdfc.id)).toBe("0.00");
+  });
+
+  it.each([
+    ["a negative amount (never read as a credit balance)", "-500"],
+    ["zero", "0"],
+    ["too many decimals", "1.005"],
+  ])("refuses %s as an opening amount owed, writing nothing", async (_label, amount) => {
+    const before = await counts(seededA.ownerId);
+    await expect(card(ownerA, `Bad card ${randomUUID().slice(0, 6)}`, { openingBalance: { amount, date: today } })).rejects.toMatchObject({
+      issues: [expect.objectContaining({ field: "openingAmount" })],
+    });
+    expect(await counts(seededA.ownerId)).toEqual(before);
+    const hdfc = await card(ownerA, `Later card ${randomUUID().slice(0, 6)}`);
+    await expect(finance.setOpeningBalance(ownerA, hdfc.id, { amount, date: today, idempotencyKey: key() })).rejects.toMatchObject({
+      issues: [expect.objectContaining({ field: "openingAmount" })],
+    });
+    expect(await balanceOf(ownerA, hdfc.id)).toBe("0.00");
+  });
+
+  it("refuses type changes across classes, keeping bank <-> cash", async () => {
+    const hdfc = await card(ownerA, "Fixed card");
+    const bank = await account(ownerA, "Fixed bank");
+    for (const type of ["bank", "cash"]) {
+      await expect(finance.updateAccount(ownerA, hdfc.id, { name: "Fixed card", type })).rejects.toMatchObject({
+        issues: [{ field: "type", message: "A credit card cannot be changed to another type" }],
+      });
+    }
+    await expect(finance.updateAccount(ownerA, bank.id, { name: "Fixed bank", type: "credit_card" })).rejects.toMatchObject({
+      issues: [{ field: "type", message: "A bank or cash account cannot be changed to a credit card" }],
+    });
+    // Neither the name nor the type changed with the refused requests.
+    await expect(finance.updateAccount(ownerA, hdfc.id, { name: "Renamed card", type: "bank" })).rejects.toThrow(FinanceValidationError);
+    expect((await finance.getAccount(ownerA, hdfc.id)).account).toMatchObject({ name: "Fixed card", type: "credit_card" });
+
+    await finance.updateAccount(ownerA, hdfc.id, { name: "Renamed card", type: "credit_card" });
+    await finance.updateAccount(ownerA, bank.id, { name: "Fixed bank", type: "cash" });
+    expect((await finance.getAccount(ownerA, hdfc.id)).account).toMatchObject({ name: "Renamed card", type: "credit_card" });
+    expect((await finance.getAccount(ownerA, bank.id)).account.type).toBe("cash");
+    expect(await ledgerKind(hdfc.ledgerAccountId)).toMatchObject({ kind: "liability" });
+  });
+
+  it("shares account-name uniqueness with bank and cash accounts", async () => {
+    const name = `Shared ${randomUUID().slice(0, 8)}`;
+    await account(ownerA, name);
+    await expect(card(ownerA, name.toUpperCase())).rejects.toMatchObject({ reason: "account-name-taken" });
+    const hdfc = await card(ownerA, `${name} card`);
+    await expect(account(ownerA, `${name} CARD`, { type: "cash" })).rejects.toMatchObject({ reason: "account-name-taken" });
+    await expect(finance.updateAccount(ownerA, hdfc.id, { name, type: "credit_card" })).rejects.toMatchObject({ reason: "account-name-taken" });
+  });
+
+  it("takes no income, expense or transfer yet, writing nothing", async () => {
+    const hdfc = await card(ownerA, "No-tx card");
+    const bank = await account(ownerA, "No-tx bank", { openingBalance: { amount: "100", date: today } });
+    const salary = await category(ownerA, "Salary", "income");
+    const groceries = await category(ownerA, "Groceries", "expense");
+    const before = await counts(seededA.ownerId);
+    const attempts: [Record<string, unknown>, string][] = [
+      [{ kind: "income", destinationAccountId: hdfc.id, categoryId: salary.id }, "destinationAccountId"],
+      [{ kind: "expense", sourceAccountId: hdfc.id, categoryId: groceries.id }, "sourceAccountId"],
+      [{ kind: "transfer", sourceAccountId: bank.id, destinationAccountId: hdfc.id }, "destinationAccountId"],
+      [{ kind: "transfer", sourceAccountId: hdfc.id, destinationAccountId: bank.id }, "sourceAccountId"],
+    ];
+    for (const [intent, field] of attempts) {
+      await expect(finance.recordTransaction(ownerA, { amount: "10", date: today, idempotencyKey: key(), ...intent })).rejects.toMatchObject({
+        issues: [{ field, message: expect.stringMatching(/is a credit card; card transactions are not supported yet/) }],
+      });
+    }
+    expect(await counts(seededA.ownerId)).toEqual(before);
+    expect(await balanceOf(ownerA, bank.id)).toBe("100.00");
+  });
+
+  it("archives and restores a card with its history and balance kept", async () => {
+    const hdfc = await card(ownerA, "Archive card", { openingBalance: { amount: "700", date: today } });
+    await finance.archiveAccount(ownerA, hdfc.id);
+    const archived = await finance.getAccount(ownerA, hdfc.id);
+    expect(archived.lifecycle).toMatchObject({ canTransact: false, canRestore: true, canDelete: false });
+    expect(archived.balance.toDecimalString()).toBe("700.00");
+    await expect(
+      finance.correctOpeningBalance(ownerA, hdfc.id, { amount: "800", date: today, idempotencyKey: key() }),
+    ).rejects.toMatchObject({ issues: [expect.objectContaining({ field: "openingAmount" })] });
+    await finance.restoreAccount(ownerA, hdfc.id);
+    expect((await finance.getAccount(ownerA, hdfc.id)).account.archivedAt).toBeNull();
+  });
+
+  it("is idempotent: a retried card creation records one account and one opening entry", async () => {
+    const input = { name: "Retry card", type: "credit_card", openingBalance: { amount: "12000", date: today }, idempotencyKey: key() };
+    const before = await counts(seededA.ownerId);
+    const first = await finance.createAccount(ownerA, input);
+    expect(await finance.createAccount(ownerA, input)).toEqual({ value: first.value, replayed: true });
+    await expect(finance.createAccount(ownerA, { ...input, type: "bank" })).rejects.toThrow(IdempotencyConflictError);
+    await expect(finance.createAccount(ownerA, { ...input, openingBalance: { amount: "12001", date: today } })).rejects.toThrow(
+      IdempotencyConflictError,
+    );
+    const after = await counts(seededA.ownerId);
+    expect([after.accounts - before.accounts, after.entries - before.entries, after.transactions - before.transactions]).toEqual([1, 1, 1]);
+  });
+
+  it("creates one card and one opening balance when card creation races itself", async () => {
+    const pool = createPrismaClient(inject("local").appDatabaseUrl, 6);
+    try {
+      const concurrent = financeFor(pool);
+      const input = { name: `Race card ${randomUUID().slice(0, 6)}`, type: "credit_card", openingBalance: { amount: "12000", date: today }, idempotencyKey: key() };
+      const results = await Promise.allSettled(Array.from({ length: 6 }, () => concurrent.createAccount(ownerA, input)));
+      const values = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+      expect(values).toHaveLength(6);
+      expect(new Set(values.map((v) => v.value.id)).size).toBe(1);
+      expect(values.filter((v) => !v.replayed)).toHaveLength(1);
+      const { rows } = await admin.query("SELECT count(*)::int AS n FROM finora.transactions WHERE destination_account_id = $1", [values[0]!.value.id]);
+      expect(rows[0].n).toBe(1);
+      expect(await balanceOf(ownerA, values[0]!.value.id)).toBe("12000.00");
+    } finally {
+      await pool.$disconnect();
+    }
+  });
+
+  it("never lets owner B see, open or change owner A's card", async () => {
+    const hdfc = await card(ownerA, "A private card", { openingBalance: { amount: "50", date: today } });
+    await expect(finance.getAccount(ownerB, hdfc.id)).rejects.toThrow(FinanceNotFoundError);
+    await expect(finance.setOpeningBalance(ownerB, hdfc.id, { amount: "1", date: today, idempotencyKey: key() })).rejects.toThrow(
+      FinanceNotFoundError,
+    );
+    await expect(finance.updateAccount(ownerB, hdfc.id, { name: "Stolen", type: "credit_card" })).rejects.toThrow(FinanceNotFoundError);
+    expect((await finance.getAccount(ownerA, hdfc.id)).account.name).toBe("A private card");
+  });
+});
+
+/** An owner with nothing else, for exact equity totals; deleted with the others. */
+async function freshOwner() {
+  const seeded = await seedOwner(admin);
+  extraOwners.push(seeded.ownerId);
+  return { seeded, owner: await authorize(prisma, seeded.subject) };
+}

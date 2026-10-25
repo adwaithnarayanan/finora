@@ -143,6 +143,11 @@ export function parseAmountFor(issues: IssueCollector, field: string, amount: st
   return undefined;
 }
 
+/**
+ * The account exists, is not archived, and can take an ordinary transaction:
+ * income, expenses and transfers use asset (bank or cash) accounts only in
+ * this release; credit cards take only an opening balance (ADR 0008).
+ */
 function requireUsable(issues: IssueCollector, field: string, account: AccountRef | undefined): account is AccountRef {
   if (!account) {
     issues.add(field, "That account does not exist");
@@ -150,6 +155,10 @@ function requireUsable(issues: IssueCollector, field: string, account: AccountRe
   }
   if (account.archived) {
     issues.add(field, `${account.name} is archived; restore it to record new transactions`);
+    return false;
+  }
+  if (account.ledgerKind !== "asset") {
+    issues.add(field, `${account.name} is a credit card; card transactions are not supported yet`);
     return false;
   }
   return true;
@@ -231,9 +240,14 @@ export function planTransaction(intent: TransactionIntent, resolved: ResolvedTra
 }
 
 /**
- * Opening balance: the account's starting position, not income. Recorded as
- *   Dr account (asset)   Cr opening-balance equity (per currency)
- * in the account's currency.
+ * Opening balance: the account's starting position, not income or expense.
+ * Recorded in the account's currency against opening-balance equity, on the
+ * side that increases the account's normal balance:
+ *   asset (bank, cash)         Dr account                  Cr opening-balance equity
+ *   liability (credit card)    Dr opening-balance equity   Cr account
+ * The amount is positive: money held, or for a card the amount owed. A
+ * negative amount is refused, never read as the opposite balance (an opening
+ * credit balance on a card is not supported yet).
  */
 export function planOpeningBalance(input: {
   readonly account: AccountRef;
@@ -251,9 +265,9 @@ export function planOpeningBalance(input: {
     amount: amount!,
     date: date!,
     description: "Opening balance",
-    lines: [
-      line(input.account.ledgerAccountId, "debit", amount!, null),
-      line(input.equityLedgerAccountId, "credit", amount!, null),
-    ],
+    lines:
+      input.account.ledgerKind === "liability"
+        ? [line(input.equityLedgerAccountId, "debit", amount!, null), line(input.account.ledgerAccountId, "credit", amount!, null)]
+        : [line(input.account.ledgerAccountId, "debit", amount!, null), line(input.equityLedgerAccountId, "credit", amount!, null)],
   };
 }

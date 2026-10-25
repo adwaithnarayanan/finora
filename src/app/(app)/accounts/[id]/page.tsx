@@ -12,7 +12,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { EditAccountForm, OpeningBalanceForm } from "@/features/accounts/account-forms";
 import { archiveAccountAction, deleteAccountAction, restoreAccountAction } from "@/features/accounts/actions";
-import { toAccountView } from "@/features/accounts/view";
+import { formatAccountBalance, toAccountView } from "@/features/accounts/view";
 import { formatLedgerDate, formatMoney, todayInIndia } from "@/features/shared/format";
 import { TransactionList } from "@/features/transactions/transaction-list";
 import { lookupsFrom, toTransactionView } from "@/features/transactions/view";
@@ -48,6 +48,7 @@ async function AccountDetail({ params }: Pick<PageProps<"/accounts/[id]">, "para
   );
   const opening = detail.openingBalance;
   const today = todayInIndia();
+  const card = view.ledgerKind === "liability";
 
   return (
     <div className="grid gap-8">
@@ -65,7 +66,7 @@ async function AccountDetail({ params }: Pick<PageProps<"/accounts/[id]">, "para
           </h1>
         </div>
         <div className="text-right">
-          <p className="text-xs text-muted-foreground">Posted balance</p>
+          <p className="text-xs text-muted-foreground">{card ? "Posted balance (owed on the card)" : "Posted balance"}</p>
           <p className={`text-3xl font-semibold tabular-nums ${view.negative ? "text-destructive" : ""}`}>{view.balance}</p>
         </div>
       </div>
@@ -73,6 +74,10 @@ async function AccountDetail({ params }: Pick<PageProps<"/accounts/[id]">, "para
       {view.archived ? (
         <p role="status" className="rounded-lg border bg-muted/40 p-3 text-sm">
           This account is archived. Its history and balance are kept, but it cannot take new transactions until restored.
+        </p>
+      ) : card ? (
+        <p role="status" className="rounded-lg border bg-muted/40 p-3 text-sm">
+          Card purchases and payments cannot be recorded yet. This card&apos;s balance is its opening amount owed.
         </p>
       ) : (
         <div className="flex flex-wrap gap-2">
@@ -86,14 +91,19 @@ async function AccountDetail({ params }: Pick<PageProps<"/accounts/[id]">, "para
         <CardHeader>
           <CardTitle>Opening balance</CardTitle>
           <CardDescription>
-            The starting position when you began tracking this account. It is not income for any period.
+            {card
+              ? "What you owed on the card when you began tracking it. It is not an expense for any period."
+              : "The starting position when you began tracking this account. It is not income for any period."}
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
           {opening ? (
             <>
               <p className="text-sm">
-                <span className="font-medium tabular-nums">{formatMoney(opening.amount)}</span> as of{" "}
+                <span className="font-medium tabular-nums">
+                  {card ? formatAccountBalance("liability", opening.amount) : formatMoney(opening.amount)}
+                </span>{" "}
+                as of{" "}
                 {formatLedgerDate(opening.occurredOn)}
               </p>
               {!view.archived ? (
@@ -106,6 +116,7 @@ async function AccountDetail({ params }: Pick<PageProps<"/accounts/[id]">, "para
                       today={opening.occurredOn}
                       mode="correct"
                       currencyCode={view.currencyCode}
+                      owed={card}
                     />
                   </div>
                 </details>
@@ -120,6 +131,7 @@ async function AccountDetail({ params }: Pick<PageProps<"/accounts/[id]">, "para
               today={today}
               mode="set"
               currencyCode={view.currencyCode}
+              owed={card}
             />
           )}
         </CardContent>
@@ -146,7 +158,7 @@ async function AccountDetail({ params }: Pick<PageProps<"/accounts/[id]">, "para
           <CardDescription>The currency cannot be changed once the account exists.</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-6">
-          <EditAccountForm account={{ id: view.id, name: view.name, type: view.type }} />
+          <EditAccountForm account={{ id: view.id, name: view.name, type: view.type, typeLabel: view.typeLabel }} />
           <div className="grid gap-3 border-t pt-4">
             <div className="flex flex-wrap gap-2">
               {view.archived ? (

@@ -35,8 +35,11 @@ async function NewTransaction({ searchParams }: Pick<PageProps<"/transactions/ne
   if (options.length === 0) {
     return (
       <div className="rounded-lg border border-dashed p-8 text-center">
-        <p className="font-medium">You need an account first</p>
-        <p className="mt-1 text-sm text-muted-foreground">Transactions move money into, out of, or between your accounts.</p>
+        <p className="font-medium">You need a bank or cash account first</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Transactions move money into, out of, or between your bank and cash accounts. Credit cards cannot take
+          transactions yet.
+        </p>
         <Link href="/accounts/new" className={buttonVariants({ className: "mt-4" })}>
           Create an account
         </Link>

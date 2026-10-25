@@ -87,11 +87,20 @@ see [`docs/runbooks/hosted-setup.md`](docs/runbooks/hosted-setup.md).
 
 ## Accounts and transactions
 
-- `/accounts`: bank and cash accounts with balances derived from posted
-  journal lines (never stored). Create one with an optional opening balance,
-  which is posted against opening-balance equity, not recorded as income.
-  Edit the name or type; archive (history kept), restore, or delete one that
-  has no history.
+- `/accounts`: bank, cash and credit-card accounts with balances derived
+  from posted journal lines (never stored). Create one with an optional
+  opening balance, which is posted against opening-balance equity, not
+  recorded as income; for a credit card it is the amount owed today, and
+  the card's balance shows as "Owed …". Edit the name, or switch between bank
+  and cash (a credit card's type is fixed); archive (history kept), restore,
+  or delete one that has no history. In this release (Milestone 5A) credit
+  cards take no other transactions yet; card purchases are planned for 5B
+  ([ADR 0008](docs/adr/0008-credit-card-accounts.md)).
+  **Hosted Supabase has not been migrated for credit cards**
+  (`20261025000600`, `20261025000700`): they are tested on local scratch
+  databases only. They need `20261025000500` and the 4D code deployed first,
+  and once a card exists the application should not be rolled back to
+  pre-5A code; see the hosted runbook ("Credit-card account migrations").
 - `/transactions/new`: record income, an expense, or a transfer. The browser
   submits intent only; server-side templates build the journal lines.
 - `/transactions`: history with search and filters (date, type, account,

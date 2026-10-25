@@ -91,6 +91,108 @@ database by hand. Instead:
 For a PostgreSQL older than 17, upgrade the project first; the migration
 cannot run there and changes nothing when it fails.
 
+### Credit-card account migrations
+
+**Status: these migrations have not been run against hosted Supabase.** They
+were tested only on local scratch databases; that does not establish hosted
+readiness. Run the preflight below first, on the hosted database, and record
+the result.
+
+Migrations `20261025000600_credit_card_account_type` (enum value only) and
+`20261025000700_account_ledger_class` (account-class guard and class-aware
+opening balances; ADR 0008) are Milestone 5A.
+
+**Prerequisite.** They assume the hosted database already has
+`20261025000500_account_name_key` applied **and** the Milestone 4D application
+code (which writes `name_key`) live. Check first:
+
+```bash
+npx prisma migrate status   # with MIGRATION_DATABASE_URL set in the shell
+```
+
+- **If 0500 and the 4D code are already live**, and 0600 and 0700 are the
+  only pending migrations: deploy migrations first, then the 5A application
+  code. No maintenance window is needed for these two, because the 4D code
+  only creates bank and cash accounts on asset ledger accounts, which the new
+  rules accept. The 5A code needs both migrations (creating a card fails at
+  the old guard without them).
+- **If the environment is behind that** (0500 pending, or older code live),
+  `npm run db:migrate:deploy` applies every pending migration in one run,
+  including 0500, 0600 and 0700. Then the whole deployment needs 0500's
+  maintenance window and write coordination, as described for
+  `20261025000500_account_name_key` earlier in this section: stop account
+  writes, run `npm run db:account-names -- conflicts`, migrate, deploy the
+  5A code, run the section 5 checks, then reopen. A window is required in
+  that case.
+
+Read-only preflight (expect `0`). It does not use anything the migration
+creates, so it also works before the migration and after a refused attempt:
+
+```bash
+psql "${MIGRATION_DATABASE_URL%%\?*}" -X -v ON_ERROR_STOP=1 -c 'BEGIN READ ONLY' \
+  -c "SELECT count(*) FROM finora.financial_accounts fa
+        JOIN finora.ledger_accounts la ON la.id = fa.ledger_account_id AND la.owner_id = fa.owner_id
+       WHERE la.kind::text IS DISTINCT FROM CASE fa.type::text WHEN 'bank' THEN 'asset'
+             WHEN 'cash' THEN 'asset' WHEN 'credit_card' THEN 'liability' END" \
+  -c 'ROLLBACK'
+```
+
+An account type the query does not know maps to NULL and is counted (fail
+closed).
+
+`20261025000700` takes `SHARE ROW EXCLUSIVE` on `finora.financial_accounts`
+(account writes wait; reads do not) with `lock_timeout = '5s'`. It refuses,
+changing nothing, if:
+
+- "financial account(s) have a ledger account of the wrong class": an
+  account's type does not match its ledger account. Nothing is ever
+  reclassified automatically. The error's HINT gives a read-only query (the
+  same `CASE` mapping as the preflight, safe to run after the rollback) that
+  lists the account id, owner id, type and ledger kind of each such account,
+  never names. Decide with the owner what each account really is and fix it
+  by a reviewed change; never edit ledger history or change a ledger
+  account's kind. Then recover as below;
+- "lock timeout": end the session holding the lock, then recover as below;
+- an existing transaction fails the replaced COMMIT-time check (not expected:
+  before credit cards every account is an asset, for which the templates are
+  unchanged). Stop and investigate; do not edit posted rows.
+
+Between 0600 and 0700 (normally the same `migrate deploy` run) the old guard
+still requires an asset ledger account, so no liability-backed account can
+exist. A `credit_card`-typed row on an asset ledger account can, however, be
+written by raw SQL in that window (an insert, or an `UPDATE` of `type`, which
+the old guard does not check); the application never does this. 0700's
+preflight refuses such rows. The comment in the 0600 file ("no credit card
+can be created") is narrower than this; that applied migration is not edited.
+
+Recovery is the same as for any failed migration here:
+`npx prisma migrate resolve --rolled-back 20261025000700_account_ledger_class && npm run db:migrate:deploy`.
+
+**Rollback.** Both migrations are forward-only: an enum value cannot be
+dropped, and undoing 0700 would be a new, reviewed migration restoring the
+previous function bodies, valid only while no credit-card account exists.
+
+Once any credit-card account exists, rolling the **application** back to
+pre-5A code (4D or earlier) is not a supported rollback path:
+
+- the old code does not know the `credit_card` type: account views may show
+  no type label, and its account handling does not expect the type at all
+  (whether every page still renders has not been tested);
+- the old transaction workflows do not know account classes: they offer
+  cards in account pickers and plan card transactions and opening balances
+  as if every account were an asset.
+
+The 5A database rules still hold under old code: `assert_transaction_valid`
+refuses any income, expense or transfer on a card and any opening balance in
+the wrong direction at COMMIT, so nothing incorrect is posted. Users of old
+code would see a generic "the ledger refused this change" error instead.
+
+**Operator decision:** after credit-card accounts have been created, fix
+forward (deploy a corrected 5A-or-later application). Do not roll the
+application back to pre-5A code unless there is a reviewed, explicit recovery
+plan. Never delete account history, delete card accounts that have history,
+or change a ledger account's kind to make old code work.
+
 Set the runtime role's login password (generate a long random value; store it
 only in the hosting provider's secret settings):
 
@@ -123,6 +225,11 @@ SELECT tgrelid::regclass, tgname, tgenabled FROM pg_trigger
 SELECT code, exponent FROM finora.currencies ORDER BY code;                           -- EUR GBP INR JPY KWD USD
 SELECT has_table_privilege('finora_app', 'finora.journal_lines', 'UPDATE'),
        has_table_privilege('finora_app', 'finora.journal_entries', 'DELETE');          -- false, false
+-- Account classes (ADR 0008): every account's ledger kind matches its type.
+SELECT t::text, finora.financial_account_ledger_kind(t)::text
+  FROM unnest(enum_range(NULL::finora.financial_account_type)) AS t;                  -- bank asset, cash asset, credit_card liability
+SELECT count(*) FROM finora.financial_accounts fa JOIN finora.ledger_accounts la ON la.id = fa.ledger_account_id
+ WHERE la.kind IS DISTINCT FROM finora.financial_account_ledger_kind(fa.type);         -- 0
 ```
 
 Account-name uniqueness (ADR 0007). Prisma's drift check cannot see the key

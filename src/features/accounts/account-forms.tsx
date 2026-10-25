@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,10 +13,16 @@ import { createAccountAction, setOpeningBalanceAction, updateAccountAction } fro
 const OPENING_HINT =
   "Your balance on this date when you start tracking. It is recorded as an opening balance (a starting position), not as income.";
 
-const TYPES = [
+const OWED_HINT =
+  "What you owe on the card on this date when you start tracking. It is recorded as an opening balance owed, not as an expense. An opening credit balance in your favour is not supported yet.";
+
+/** Types of the same class can be swapped later; a credit card stays a credit card. */
+const ASSET_TYPES = [
   { value: "bank", label: "Bank account" },
   { value: "cash", label: "Cash" },
 ] as const;
+
+const TYPES = [...ASSET_TYPES, { value: "credit_card", label: "Credit card" }] as const;
 
 export function CreateAccountForm({
   idempotencyKey,
@@ -30,6 +36,8 @@ export function CreateAccountForm({
   const [state, action, pending] = useActionState<ActionState, FormData>(createAccountAction, INITIAL_STATE);
   const errors = state.fieldErrors ?? {};
   const values = state.values ?? {};
+  const [type, setType] = useState(values["type"] ?? "bank");
+  const card = type === "credit_card";
   return (
     <form action={action} className="grid gap-5" noValidate>
       <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
@@ -39,7 +47,15 @@ export function CreateAccountForm({
       <div className="grid gap-5 sm:grid-cols-2">
         <Field name="type" label="Type" error={errors["type"]}>
           {(props) => (
-            <NativeSelect {...props} defaultValue={values["type"] ?? "bank"}>
+            // Uncontrolled like the other fields; `type` only drives the labels.
+            // React applies a select's defaultValue on mount only, so the key
+            // remounts it with the submitted value when a submit is refused.
+            <NativeSelect
+              {...props}
+              key={values["type"] ?? ""}
+              defaultValue={values["type"] ?? "bank"}
+              onChange={(event) => setType(event.target.value)}
+            >
               {TYPES.map((t) => (
                 <option key={t.value} value={t.value}>
                   {t.label}
@@ -50,7 +66,7 @@ export function CreateAccountForm({
         </Field>
         <Field name="currency" label="Currency" error={errors["currency"]} hint="Cannot be changed later.">
           {(props) => (
-            <NativeSelect {...props} defaultValue={values["currency"] ?? "INR"}>
+            <NativeSelect {...props} key={values["currency"] ?? ""} defaultValue={values["currency"] ?? "INR"}>
               {currencies.map((c) => (
                 <option key={c.code} value={c.code}>
                   {c.label}
@@ -62,9 +78,9 @@ export function CreateAccountForm({
       </div>
       <fieldset className="grid gap-4 rounded-lg border p-4">
         <legend className="px-1 text-sm font-medium">Opening balance (optional)</legend>
-        <p className="text-xs text-muted-foreground">{OPENING_HINT}</p>
+        <p className="text-xs text-muted-foreground">{card ? OWED_HINT : OPENING_HINT}</p>
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field name="openingAmount" label="Amount" error={errors["openingAmount"]}>
+          <Field name="openingAmount" label={card ? "Amount owed today" : "Amount"} error={errors["openingAmount"]}>
             {(props) => <Input {...props} inputMode="decimal" autoComplete="off" placeholder="0.00" defaultValue={values["openingAmount"]} />}
           </Field>
           <Field name="openingDate" label="As of" error={errors["openingDate"]}>
@@ -82,7 +98,7 @@ export function CreateAccountForm({
   );
 }
 
-export function EditAccountForm({ account }: { account: { id: string; name: string; type: string } }) {
+export function EditAccountForm({ account }: { account: { id: string; name: string; type: string; typeLabel: string } }) {
   const [state, action, pending] = useActionState<ActionState, FormData>(updateAccountAction, INITIAL_STATE);
   const errors = state.fieldErrors ?? {};
   const values = state.values ?? {};
@@ -93,17 +109,27 @@ export function EditAccountForm({ account }: { account: { id: string; name: stri
         <Field name="name" label="Account name" error={errors["name"]}>
           {(props) => <Input {...props} required maxLength={60} defaultValue={values["name"] ?? account.name} autoComplete="off" />}
         </Field>
-        <Field name="type" label="Type" error={errors["type"]}>
-          {(props) => (
-            <NativeSelect {...props} defaultValue={values["type"] ?? account.type}>
-              {TYPES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
-              ))}
-            </NativeSelect>
-          )}
-        </Field>
+        {account.type === "credit_card" ? (
+          // Fixed: a card's liability ledger account cannot become an asset.
+          <div className="grid content-start gap-2 text-sm">
+            <input type="hidden" name="type" value={account.type} />
+            <span className="font-medium">Type</span>
+            <span>{account.typeLabel}</span>
+            <span className="text-xs text-muted-foreground">A credit card&apos;s type cannot be changed.</span>
+          </div>
+        ) : (
+          <Field name="type" label="Type" error={errors["type"]}>
+            {(props) => (
+              <NativeSelect {...props} defaultValue={values["type"] ?? account.type}>
+                {ASSET_TYPES.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
+                  </option>
+                ))}
+              </NativeSelect>
+            )}
+          </Field>
+        )}
       </div>
       <FormError state={state} />
       <div>
@@ -121,12 +147,15 @@ export function OpeningBalanceForm({
   today,
   mode,
   currencyCode,
+  owed,
 }: {
   accountId: string;
   idempotencyKey: string;
   today: string;
   mode: "set" | "correct";
   currencyCode: string;
+  /** A credit card: the amount is what is owed. */
+  owed: boolean;
 }) {
   const [state, action, pending] = useActionState<ActionState, FormData>(setOpeningBalanceAction, INITIAL_STATE);
   const errors = state.fieldErrors ?? {};
@@ -139,10 +168,16 @@ export function OpeningBalanceForm({
       <p className="text-xs text-muted-foreground">
         {mode === "correct"
           ? "Correcting reverses the current opening balance and records the new one. Both stay in the history."
-          : OPENING_HINT}
+          : owed
+            ? OWED_HINT
+            : OPENING_HINT}
       </p>
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field name="openingAmount" label={`Opening balance (${currencyCode})`} error={errors["openingAmount"]}>
+        <Field
+          name="openingAmount"
+          label={owed ? `Amount owed (${currencyCode})` : `Opening balance (${currencyCode})`}
+          error={errors["openingAmount"]}
+        >
           {(props) => <Input {...props} inputMode="decimal" autoComplete="off" placeholder="0.00" required defaultValue={values["openingAmount"]} />}
         </Field>
         <Field name="openingDate" label="As of" error={errors["openingDate"]}>

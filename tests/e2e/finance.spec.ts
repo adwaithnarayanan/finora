@@ -278,6 +278,80 @@ test.describe("accounts and transactions (owner)", () => {
     await expect(page.getByRole("link", { name: /Typo account/ })).toHaveCount(0);
   });
 
+  test("create a credit card with the amount owed; its type is fixed and it takes no transactions yet", async ({ page }) => {
+    await page.goto("/accounts/new");
+    await page.getByLabel("Account name").fill("HDFC Card");
+    await page.getByLabel("Type").selectOption("credit_card");
+    await expect(page.getByText(/An opening credit balance in your favour is not supported yet/)).toBeVisible();
+    await expect(page.getByLabel("Amount", { exact: true })).toHaveCount(0);
+    await page.getByLabel("Amount owed today").fill("12000");
+    await page.getByLabel("As of").fill("2026-10-01");
+    await page.getByRole("button", { name: "Create account" }).click();
+
+    await expect(page.getByRole("heading", { level: 1, name: /HDFC Card/ })).toBeVisible();
+    await expect(page.getByText("Credit card · INR")).toBeVisible();
+    await expect(balanceOn(page)).toHaveText("Owed ₹12,000.00");
+    await expect(page.getByText("Owed ₹12,000.00 as of 1 Oct 2026")).toBeVisible();
+    await expect(page.getByText(/Card purchases and payments cannot be recorded yet/)).toBeVisible();
+    await expect(page.getByRole("link", { name: "Record transaction" })).toHaveCount(0);
+    await expect(page.getByRole("list", { name: "Transactions" })).toContainText("−₹12,000.00"); // owed: money out
+
+    // The type cannot be changed; the name can.
+    await expect(page.getByRole("combobox", { name: "Type" })).toHaveCount(0);
+    await expect(page.locator('select[name="type"]:visible')).toHaveCount(0);
+    await expect(page.getByText("A credit card's type cannot be changed.")).toBeVisible();
+    await page.getByLabel("Account name").fill("HDFC Regalia");
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await expect(page.getByText("Saved.")).toBeVisible();
+
+    await page.getByText("Correct the opening balance").click();
+    await page.getByLabel(/^Amount owed/).fill("11500");
+    await page.getByRole("button", { name: "Correct opening balance" }).click();
+    await expect(page.getByText("Owed ₹11,500.00 as of 1 Oct 2026")).toBeVisible();
+    await expect(balanceOn(page)).toHaveText("Owed ₹11,500.00");
+
+    await page.goto("/accounts");
+    const listed = page.getByRole("link", { name: /^HDFC Regalia/ });
+    await expect(listed).toContainText("Credit card · INR");
+    await expect(listed).toContainText("Owed ₹11,500.00");
+
+    // A card alone cannot take a transaction.
+    await page.goto("/transactions/new");
+    await expect(page.getByText("You need a bank or cash account first")).toBeVisible();
+  });
+
+  test("a card with nothing owed, a refused negative amount, and bank accounts kept out of the card type", async ({ page }) => {
+    await page.goto("/accounts/new");
+    await page.getByLabel("Account name").fill("Amex");
+    await page.getByLabel("Type").selectOption("credit_card");
+    await page.getByLabel("Currency").selectOption("USD");
+    await page.getByLabel("Amount owed today").fill("-500");
+    await page.getByRole("button", { name: "Create account" }).click();
+    await expect(page.getByText("Enter an amount greater than zero")).toBeVisible();
+    // The refused input is kept, selects included.
+    await expect(page.getByLabel("Type")).toHaveValue("credit_card");
+    await expect(page.getByLabel("Currency")).toHaveValue("USD");
+    await expect(page.getByLabel("Amount owed today")).toHaveValue("-500");
+    await page.goto("/accounts");
+    await expect(page.getByText("No accounts yet")).toBeVisible(); // nothing was saved
+
+    await createAccount(page, "Amex", { type: "credit_card" });
+    await expect(balanceOn(page)).toHaveText("Nothing owed (₹0.00)");
+    await expect(page.getByLabel("Amount owed (INR)")).toBeVisible(); // the opening form, for a card
+
+    // A bank account can switch to cash, but is never offered the card type.
+    await createAccount(page, "Axis Savings", { opening: "50000", asOf: "2026-10-01" });
+    await expect(page.getByLabel("Type").locator("option")).toHaveText(["Bank account", "Cash"]);
+    await page.getByLabel("Type").selectOption("cash");
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await expect(page.getByText("Saved.")).toBeVisible();
+    await expect(balanceOn(page)).toHaveText("₹50,000.00");
+
+    // Transaction pickers list bank and cash accounts only.
+    await page.goto("/transactions/new?type=transfer");
+    await expect(page.getByLabel("From account", { exact: true }).locator("option", { hasText: "Amex" })).toHaveCount(0);
+  });
+
   test("correct the opening balance: original reversed, replacement recorded", async ({ page }) => {
     await createSampleHistory(page);
     await openAccount(page, "HDFC Savings");

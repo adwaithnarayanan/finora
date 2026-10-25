@@ -19,7 +19,7 @@ const CURRENCIES = Object.values(KNOWN_CURRENCIES).map((c) => ({
 export default function NewAccountPage() {
   return (
     <div className="max-w-2xl">
-      <PageHeader title="New account" description="A bank account or cash you want to track." />
+      <PageHeader title="New account" description="A bank account, cash or a credit card you want to track." />
       <Suspense fallback={<PageLoading />}>
         <NewAccount />
       </Suspense>

@@ -34,11 +34,14 @@ invariants are unchanged.
     unique per owner through the index `financial_accounts_owner_name_key_key`
     on `(owner_id, name_key)`; see ADR 0007, which replaced the earlier
     `lower(name)` index of migration `20261025000400`),
-    `type` (`bank | cash`), `currency_code`, `ledger_account_id`, the creation
-    key and fingerprint, timestamps, and `archived_at`.
+    `type` (`bank | cash`; `credit_card` since ADR 0008), `currency_code`,
+    `ledger_account_id`, the creation key and fingerprint, timestamps, and
+    `archived_at`.
   - Each account is backed by exactly one **asset** ledger account of the
     same owner and currency. A composite foreign key and a trigger enforce
-    this.
+    this. (ADR 0008: one ledger account of the type's class, so a credit
+    card is backed by a liability account, and a type change may not cross
+    classes.)
   - The currency, ledger link and identity are immutable (trigger). Only the
     name (with its key), type and archive state can change, and only those
     columns are granted.
@@ -80,6 +83,9 @@ two lines, for the same amount:
 | transfer | destination account (asset) | source account (asset) |
 | opening_balance | the account (asset) | opening-balance equity (per currency) |
 
+ADR 0008 adds the liability direction: a credit card's opening amount owed is
+Dr opening-balance equity, Cr the card.
+
 - **Amounts** are decimal strings parsed exactly by the money module in the
   account's currency. They must be positive and fit a ledger line. There is no
   floating point and no FX: a transfer needs two accounts in the same currency.
@@ -114,7 +120,8 @@ same equity account.
   - a new `opening_balance` transaction with `replaces_transaction_id` records
     the replacement.
 - **Positive only in this release.** Negative (overdrawn) opening balances
-  aren't supported yet.
+  aren't supported yet. For a credit card (ADR 0008) the amount is what is
+  owed; an opening credit balance in the owner's favour isn't supported yet.
 
 ### Lifecycle
 
@@ -219,8 +226,9 @@ replaces it with an application-defined comparison key stored in
   owner), so N queries per page is acceptable for now; a batched balance query
   can come later without changing the model.
 - **Deferred:**
-  - credit cards, loans, investments and deposits (further account types,
-    likely liability-normal);
+  - credit cards (foundation in ADR 0008; purchases, payments and refunds
+    still deferred), loans, investments and deposits (further account
+    types, likely liability-normal);
   - FX transfers;
   - editing a transaction through a single correction step (today: void and
     re-enter);

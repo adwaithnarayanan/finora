@@ -16,7 +16,7 @@ export default function AccountsPage({ searchParams }: PageProps<"/accounts">) {
     <>
       <PageHeader
         title="Accounts"
-        description="Bank and cash accounts. Balances are calculated from posted entries."
+        description="Bank, cash and credit-card accounts. Balances are calculated from posted entries."
         actions={
           <Link href="/accounts/new" className={buttonVariants()}>
             New account
@@ -41,7 +41,7 @@ async function AccountList({ searchParams }: Pick<PageProps<"/accounts">, "searc
     return (
       <div className="rounded-lg border border-dashed p-8 text-center">
         <p className="font-medium">No accounts yet</p>
-        <p className="mt-1 text-sm text-muted-foreground">Add a bank or cash account, with its opening balance, to start.</p>
+        <p className="mt-1 text-sm text-muted-foreground">Add a bank, cash or credit-card account, with its opening balance, to start.</p>
         <Link href="/accounts/new" className={buttonVariants({ className: "mt-4" })}>
           Create your first account
         </Link>

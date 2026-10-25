@@ -1,5 +1,7 @@
 export {
+  ACCOUNT_LEDGER_KIND,
   ACCOUNT_TYPE_LABELS,
+  type AccountClass,
   type AccountLifecycle,
   type AccountRef,
   DEFAULT_CURRENCY_CODE,
@@ -8,6 +10,7 @@ export {
   accountLifecycle,
   parseAccountName,
   parseAccountType,
+  parseAccountTypeChange,
 } from "./accounts";
 export { type AccountName, canonicalAccountName } from "./account-name";
 export { CATEGORY_KINDS, type CategoryKind, type CategoryRef, DEFAULT_CATEGORIES, parseCategoryKind } from "./categories";

@@ -190,9 +190,12 @@ model JournalLine {
 // Business records on top of the ledger: every amount here is also, exactly,
 // a posted journal entry. Balances are never stored; they come from the ledger.
 
+/// Each type has one ledger-account class (ADR 0008): bank and cash are
+/// assets, credit_card is a liability. Enforced by financial_accounts_guard.
 enum FinancialAccountType {
   bank
   cash
+  credit_card
 
   @@map("financial_account_type")
   @@schema("finora")
@@ -223,7 +226,8 @@ enum SystemLedgerPurpose {
   @@schema("finora")
 }
 
-/// A user-facing bank or cash account, backed by exactly one asset ledger account.
+/// A user-facing bank, cash or credit-card account, backed by exactly one
+/// ledger account of its type's class (asset, or liability for credit cards).
 model FinancialAccount {
   id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   ownerId             String               @map("owner_id") @db.Uuid

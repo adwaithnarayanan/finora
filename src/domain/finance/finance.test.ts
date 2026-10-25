@@ -4,13 +4,17 @@ import { INR, KNOWN_CURRENCIES } from "@/domain/money";
 import { parseLedgerDate } from "@/domain/ledger";
 
 import {
+  ACCOUNT_LEDGER_KIND,
+  ACCOUNT_TYPE_LABELS,
   type AccountRef,
   type CategoryRef,
+  FINANCIAL_ACCOUNT_TYPES,
   DEFAULT_CATEGORIES,
   FinanceValidationError,
   IssueCollector,
   accountLifecycle,
   parseAccountType,
+  parseAccountTypeChange,
   parseCategoryKind,
   parseName,
   parseNote,
@@ -25,6 +29,7 @@ const account = (n: number, extra: Partial<AccountRef> = {}): AccountRef => ({
   id: id(n),
   name: `Account ${n}`,
   ledgerAccountId: id(100 + n),
+  ledgerKind: "asset",
   currency: INR,
   archived: false,
   ...extra,
@@ -36,6 +41,7 @@ const category = (kind: "income" | "expense", extra: Partial<CategoryRef> = {}):
   archived: false,
   ...extra,
 });
+const card = (n: number, extra: Partial<AccountRef> = {}) => account(n, { name: `Card ${n}`, ledgerKind: "liability", ...extra });
 const date = "2026-10-25";
 
 function issuesOf(fn: () => unknown) {
@@ -158,6 +164,21 @@ describe("posting templates", () => {
     expect(issuesOf(fn)).toEqual(fields);
   });
 
+  it.each([
+    ["income into a card", () => planTransaction(income, { destination: card(1), category: category("income"), categoryLedgerAccountId: id(300) }), "destinationAccountId"],
+    ["an expense paid by card (not yet)", () => planTransaction(expense, { source: card(1), category: category("expense"), categoryLedgerAccountId: id(301) }), "sourceAccountId"],
+    ["a transfer from a card", () => planTransaction(transfer, { source: card(1), destination: account(2) }), "sourceAccountId"],
+    ["a transfer to a card", () => planTransaction(transfer, { source: account(1), destination: card(2) }), "destinationAccountId"],
+  ])("refuses %s: credit cards take only an opening balance in this release", (_label, fn, field) => {
+    try {
+      fn();
+      throw new Error("expected FinanceValidationError");
+    } catch (error) {
+      if (!(error instanceof FinanceValidationError)) throw error;
+      expect(error.issues).toEqual([{ field, message: expect.stringMatching(/is a credit card; card transactions are not supported yet/) }]);
+    }
+  });
+
   it("checks precision and size against the account's currency", () => {
     const jpy = account(1, { currency: KNOWN_CURRENCIES.JPY });
     const precise = parseTransactionIntent({ kind: "income", amount: "10.5", date, destinationAccountId: id(1), categoryId: id(200) });
@@ -171,12 +192,30 @@ describe("posting templates", () => {
 });
 
 describe("opening balance template", () => {
-  it("debits the account and credits opening-balance equity in the account's currency", () => {
+  it("asset: debits the account and credits opening-balance equity in the account's currency", () => {
     const plan = planOpeningBalance({ account: account(1), amount: " 25000.5 ", date, equityLedgerAccountId: id(400) });
     expect(plan).toMatchObject({ kind: "opening_balance", description: "Opening balance", date });
     expect(plan.lines).toEqual([
       { accountId: id(101), side: "debit", amount: "25000.50", currency: "INR", memo: null },
       { accountId: id(400), side: "credit", amount: "25000.50", currency: "INR", memo: null },
+    ]);
+  });
+
+  it("liability (credit card): debits opening-balance equity and credits the card with the amount owed", () => {
+    const plan = planOpeningBalance({ account: card(1), amount: "12000", date, equityLedgerAccountId: id(400) });
+    expect(plan).toMatchObject({ kind: "opening_balance", description: "Opening balance", date });
+    expect(plan.amount.minor).toBe(1200000n);
+    expect(plan.lines).toEqual([
+      { accountId: id(400), side: "debit", amount: "12000.00", currency: "INR", memo: null },
+      { accountId: id(101), side: "credit", amount: "12000.00", currency: "INR", memo: null },
+    ]);
+  });
+
+  it("uses the card's own currency and precision", () => {
+    const plan = planOpeningBalance({ account: card(1, { currency: KNOWN_CURRENCIES.KWD }), amount: "1.234", date, equityLedgerAccountId: id(400) });
+    expect(plan.lines.map((l) => [l.side, l.amount, l.currency])).toEqual([
+      ["debit", "1.234", "KWD"],
+      ["credit", "1.234", "KWD"],
     ]);
   });
 
@@ -187,6 +226,44 @@ describe("opening balance template", () => {
     ["archived account", { account: account(1, { archived: true }) }, ["openingAmount"]],
   ])("rejects %s", (_label, override, fields) => {
     expect(issuesOf(() => planOpeningBalance({ account: account(1), amount: "10", date, equityLedgerAccountId: id(400), ...override }))).toEqual(fields);
+  });
+
+  it.each([
+    ["a negative amount owed (never read as a credit balance)", { amount: "-500" }],
+    ["zero owed", { amount: "0" }],
+    ["too precise", { amount: "1.001" }],
+    ["an archived card", { account: card(1, { archived: true }) }],
+  ])("rejects %s on a card", (_label, override) => {
+    expect(issuesOf(() => planOpeningBalance({ account: card(1), amount: "10", date, equityLedgerAccountId: id(400), ...override }))).toEqual([
+      "openingAmount",
+    ]);
+  });
+
+  it("rejects a negative asset opening balance too", () => {
+    expect(issuesOf(() => planOpeningBalance({ account: account(1), amount: "-500", date, equityLedgerAccountId: id(400) }))).toEqual([
+      "openingAmount",
+    ]);
+  });
+});
+
+describe("account classes (ADR 0008)", () => {
+  it("maps every account type to exactly one ledger-account kind", () => {
+    expect(ACCOUNT_LEDGER_KIND).toEqual({ bank: "asset", cash: "asset", credit_card: "liability" });
+    expect(Object.keys(ACCOUNT_LEDGER_KIND).sort()).toEqual([...FINANCIAL_ACCOUNT_TYPES].sort());
+    expect(Object.keys(ACCOUNT_TYPE_LABELS).sort()).toEqual([...FINANCIAL_ACCOUNT_TYPES].sort());
+    expect(Object.isFrozen(ACCOUNT_LEDGER_KIND)).toBe(true);
+  });
+
+  it("allows a type change only within a class", () => {
+    expect(parseAccountTypeChange("bank", "cash")).toBe("cash");
+    expect(parseAccountTypeChange("cash", "bank")).toBe("bank");
+    expect(parseAccountTypeChange("bank", "bank")).toBe("bank");
+    expect(parseAccountTypeChange("credit_card", "credit_card")).toBe("credit_card");
+    expect(() => parseAccountTypeChange("bank", "credit_card")).toThrow(/cannot be changed to a credit card/);
+    expect(() => parseAccountTypeChange("cash", "credit_card")).toThrow(/cannot be changed to a credit card/);
+    expect(() => parseAccountTypeChange("credit_card", "bank")).toThrow(/credit card cannot be changed/);
+    expect(() => parseAccountTypeChange("credit_card", "cash")).toThrow(/credit card cannot be changed/);
+    expect(() => parseAccountTypeChange("bank", "loan")).toThrow(/bank account, cash or credit card/);
   });
 });
 
@@ -205,7 +282,8 @@ describe("field parsers", () => {
   it("parses account types and category kinds", () => {
     expect(parseAccountType("bank")).toBe("bank");
     expect(parseAccountType("cash")).toBe("cash");
-    for (const bad of ["credit_card", "loan", "", null]) expect(() => parseAccountType(bad)).toThrow(/bank account or cash/);
+    expect(parseAccountType("credit_card")).toBe("credit_card");
+    for (const bad of ["credit card", "loan", "", null]) expect(() => parseAccountType(bad)).toThrow(/bank account, cash or credit card/);
     expect(parseCategoryKind("income")).toBe("income");
     expect(() => parseCategoryKind("transfer")).toThrow(/income or expense/);
   });
