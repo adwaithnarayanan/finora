@@ -26,3 +26,19 @@ test("there is no public sign-up page", async ({ page }) => {
   await page.goto("/login");
   await expect(page.getByRole("link", { name: /sign up|register|create account/i })).toHaveCount(0);
 });
+
+test("owner pages fit the screen without horizontal scrolling", async ({ page }) => {
+  const { e2eUsers } = await import("./support/fixtures");
+  const { signIn } = await import("./support/login");
+  const { owner } = e2eUsers();
+  await signIn(page, owner.email, owner.password);
+  await expect(page).toHaveURL(/\/$/);
+  for (const path of ["/accounts", "/accounts/new", "/transactions", "/transactions/new", "/categories"]) {
+    await page.goto(path);
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow, path).toBeLessThanOrEqual(0);
+  }
+});

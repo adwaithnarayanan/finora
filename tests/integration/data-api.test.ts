@@ -34,6 +34,11 @@ describe("Supabase Data API exposure", () => {
       "ledger_accounts",
       "journal_entries",
       "journal_lines",
+      "financial_accounts",
+      "categories",
+      "category_ledger_accounts",
+      "system_ledger_accounts",
+      "transactions",
     ]) {
       const result = await get(`${table}?select=*`, secretKey);
       expect(result.status, table).toBeGreaterThanOrEqual(400);

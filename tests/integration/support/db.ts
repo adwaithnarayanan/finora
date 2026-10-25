@@ -5,6 +5,8 @@ import { inject } from "vitest";
 
 import { createPrismaClient } from "@/server/db/client";
 
+import { purgeOwnerData } from "../../support/purge";
+
 /** Privileged connection (postgres, BYPASSRLS) for fixtures and catalog checks only. */
 export async function adminClient(): Promise<pg.Client> {
   const url = new URL(inject("local").migrationDatabaseUrl);
@@ -47,27 +49,8 @@ export async function seedOwner(
   return { ownerId, subject };
 }
 
-/**
- * Removes test owners' ledger rows. Posted history is immutable even for the
- * migration role, so this LOCAL-ONLY cleanup disables triggers for one
- * transaction (session_replication_role = replica, which Supabase grants to
- * `postgres`). Nothing in the schema offers a bypass; never run this against
- * a hosted database.
- */
-export async function purgeLedger(admin: pg.Client, ownerIds: string[]): Promise<void> {
-  if (ownerIds.length === 0) return;
-  await admin.query("BEGIN");
-  try {
-    await admin.query("SET LOCAL session_replication_role = replica");
-    for (const table of ["journal_lines", "journal_entries", "ledger_accounts"]) {
-      await admin.query(`DELETE FROM finora.${table} WHERE owner_id = ANY($1::uuid[])`, [ownerIds]);
-    }
-    await admin.query("COMMIT");
-  } catch (error) {
-    await admin.query("ROLLBACK");
-    throw error;
-  }
-}
+/** See tests/support/purge.ts (LOCAL-ONLY trigger bypass for test cleanup). */
+export const purgeLedger = purgeOwnerData;
 
 export async function deleteOwners(admin: pg.Client, ownerIds: string[]): Promise<void> {
   if (ownerIds.length === 0) return;

@@ -152,17 +152,38 @@ describe("schema-wide guards (keep passing as tables are added)", () => {
              WHERE table_schema = 'finora' AND grantee = 'finora_app')`,
     );
     expect(rows.map((r) => `${r.table_name}:${r.privilege_type}`).sort()).toEqual([
+      "categories.archived_at:UPDATE",
+      "categories.name:UPDATE",
+      "categories:INSERT",
+      "categories:SELECT",
+      "category_ledger_accounts:INSERT",
+      "category_ledger_accounts:SELECT",
       "currencies:SELECT",
+      "financial_accounts.archived_at:UPDATE",
+      "financial_accounts.name:UPDATE",
+      "financial_accounts.type:UPDATE",
+      "financial_accounts:DELETE",
+      "financial_accounts:INSERT",
+      "financial_accounts:SELECT",
       "journal_entries.status:UPDATE",
       "journal_entries:INSERT",
       "journal_entries:SELECT",
       "journal_lines:DELETE",
       "journal_lines:INSERT",
       "journal_lines:SELECT",
+      // Milestone 4B: unused accounts only (foreign keys restrict the rest).
+      "ledger_accounts:DELETE",
       "ledger_accounts:INSERT",
       "ledger_accounts:SELECT",
       "owner_identities:SELECT",
       "owners:SELECT",
+      "system_ledger_accounts:INSERT",
+      "system_ledger_accounts:SELECT",
+      "transactions.note:UPDATE",
+      "transactions.payee:UPDATE",
+      "transactions.reversal_entry_id:UPDATE",
+      "transactions:INSERT",
+      "transactions:SELECT",
     ]);
   });
 
@@ -175,7 +196,16 @@ describe("schema-wide guards (keep passing as tables are added)", () => {
          FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid
         WHERE c.relnamespace = 'finora'::regnamespace AND p.polname = 'owner_isolation'`,
     );
-    expect(rows.length).toBeGreaterThanOrEqual(3);
+    expect(rows.map((r) => r.relname).sort()).toEqual([
+      "categories",
+      "category_ledger_accounts",
+      "financial_accounts",
+      "journal_entries",
+      "journal_lines",
+      "ledger_accounts",
+      "system_ledger_accounts",
+      "transactions",
+    ]);
     for (const row of rows) {
       expect(row, row.relname).toEqual({
         relname: row.relname,
@@ -251,9 +281,13 @@ describe("schema-wide guards (keep passing as tables are added)", () => {
     );
     for (const row of rows) expect(row.config, row.proname).toContain("search_path=");
     expect(rows.filter((r) => r.prosecdef).map((r) => r.proname)).toEqual([
+      "financial_accounts_guard",
       "journal_entries_validate",
       "journal_lines_guard",
       "journal_lines_validate",
+      "ledger_mappings_guard",
+      "transactions_insert_guard",
+      "transactions_validate",
     ]);
   });
 

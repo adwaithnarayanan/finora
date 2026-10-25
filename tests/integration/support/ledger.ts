@@ -3,9 +3,11 @@ import type pg from "pg";
 import { authorizeOwner } from "@/server/auth/authorize";
 import type { AuthorizedOwner } from "@/server/auth/types";
 import type { PrismaClient } from "@/server/db/generated/client";
+import { PrismaFinanceStore } from "@/server/db/finance-store";
 import { PrismaLedgerStore } from "@/server/db/ledger-store";
 import { PrismaOwnerDirectory } from "@/server/db/owner-directory";
 import { runInOwnerScope } from "@/server/db/scope";
+import { type FinanceStores, createFinanceService } from "@/server/finance/service";
 import { type LedgerRunner, createLedgerService } from "@/server/ledger/service";
 import type { LedgerStore } from "@/server/ledger/store";
 
@@ -66,3 +68,12 @@ export const line = (
   currency = "INR",
   memo?: string,
 ) => ({ accountId, side, amount, currency, ...(memo === undefined ? {} : { memo }) });
+
+/** The production finance wiring (both stores, one owner-scoped transaction). */
+export function financeFor(prisma: PrismaClient, wrap: (stores: FinanceStores) => FinanceStores = (stores) => stores) {
+  return createFinanceService((owner, work) =>
+    runInOwnerScope(prisma, owner, (tx) =>
+      work(wrap({ ledger: new PrismaLedgerStore(tx, owner.ownerId), finance: new PrismaFinanceStore(tx, owner.ownerId) })),
+    ),
+  );
+}

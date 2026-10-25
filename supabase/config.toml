@@ -162,7 +162,10 @@ site_url = "http://localhost:3000"
 # The public URL that Auth serves on. Defaults to the API external URL with `/auth/v1` appended.
 # external_url = ""
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
-additional_redirect_urls = ["http://localhost:3000/auth/confirm"]
+# Email/password mode (ADR 0003) needs no redirect URLs: Finora sends no sign-in
+# or reset links. Google mode (deferred) re-adds "<origin>/auth/callback" for
+# http://localhost:3000 and the Playwright server on http://localhost:3100.
+additional_redirect_urls = []
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # JWT issuer URL. If not set, defaults to auth.external_url.
@@ -175,6 +178,8 @@ enable_refresh_token_rotation = true
 # Requires enable_refresh_token_rotation = true.
 refresh_token_reuse_interval = 10
 # Allow/disallow new user signups to your project. Finora is owner-only: never enable.
+# With this off, nobody can register: users exist only if an operator created
+# them, and even then access needs an explicit owner mapping. See ADR 0003.
 enable_signup = false
 # Allow/disallow anonymous sign-ins to your project.
 enable_anonymous_sign_ins = false
@@ -219,8 +224,11 @@ web3 = 30
 # secret = ""
 
 [auth.email]
-# NOTE: in the CLI this flag enables the email provider itself (password login,
-# recovery). Keep it true; public sign-ups are blocked by [auth] enable_signup.
+# NOTE: in the CLI this flag enables the email provider itself (password
+# sign-in), NOT public registration, which [auth] enable_signup = false blocks.
+# Current mode: email/password. Magic-link, OTP, recovery, invite and
+# confirmation emails carry no usable link or code (templates below), so the
+# password, set only by an operator, is the only way to sign in.
 enable_signup = true
 # If enabled, a user will be required to confirm any email change on both the old, and new email
 # addresses. If disabled, only the new email is required to confirm.
@@ -231,10 +239,12 @@ enable_confirmations = true
 secure_password_change = true
 # Controls the minimum amount of time that must pass before sending another signup confirmation or password reset email.
 max_frequency = "1s"
-# Number of characters used in the email OTP.
-otp_length = 6
+# Number of characters used in the email OTP. Finora's emails never contain
+# the code, but Auth still issues one for OTP/recovery requests: the maximum
+# length and a short expiry make guessing it infeasible (ADR 0003).
+otp_length = 10
 # Number of seconds before the email OTP expires (defaults to 1 hour).
-otp_expiry = 3600
+otp_expiry = 300
 
 # Use a production-ready SMTP server
 # [auth.email.smtp]
@@ -246,14 +256,23 @@ otp_expiry = 3600
 # admin_email = "admin@email.com"
 # sender_name = "Admin"
 
-# Token-hash links handled by /auth/confirm (server-side verifyOtp; works across devices).
-[auth.email.template.invite]
-subject = "Set up your Finora access"
-content_path = "./supabase/templates/invite.html"
-
+# Link/code emails are neutralised: the template contains no ConfirmationURL,
+# Token or TokenHash, so these flows cannot produce a session.
 [auth.email.template.recovery]
-subject = "Reset your Finora password"
-content_path = "./supabase/templates/recovery.html"
+subject = "Finora: password reset is not available"
+content_path = "./supabase/templates/no-email-sign-in.html"
+
+[auth.email.template.magic_link]
+subject = "Finora: email sign-in is not available"
+content_path = "./supabase/templates/no-email-sign-in.html"
+
+[auth.email.template.invite]
+subject = "Finora: email invites are not used"
+content_path = "./supabase/templates/no-email-sign-in.html"
+
+[auth.email.template.confirmation]
+subject = "Finora: email sign-up is not available"
+content_path = "./supabase/templates/no-email-sign-in.html"
 
 # Uncomment to customize notification email template
 # [auth.email.notification.password_changed]
@@ -323,6 +342,19 @@ max_frequency = "5s"
 # [auth.mfa.web_authn]
 # enroll_enabled = true
 # verify_enabled = true
+
+# Google OAuth is DEFERRED (current mode: email/password; ADR 0003). To restore
+# it, set enabled = true, disable the email provider above and follow
+# docs/runbooks/google-oauth.md. Credentials come from the environment (root
+# .env, read by the Supabase CLI); never commit real values.
+[auth.external.google]
+enabled = false
+client_id = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID)"
+secret = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET)"
+redirect_uri = ""
+url = ""
+skip_nonce_check = false
+email_optional = false
 
 # Use an external OAuth provider. The full list of providers are: `apple`, `azure`, `bitbucket`,
 # `discord`, `facebook`, `github`, `gitlab`, `google`, `keycloak`, `linkedin_oidc`, `notion`, `twitch`,

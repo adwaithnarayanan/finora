@@ -15,7 +15,7 @@ export default defineConfig({
     setupFiles: ["./vitest.setup.ts"],
     coverage: {
       provider: "v8",
-      include: ["src/domain/**/*.ts", "src/server/**/*.ts"],
+      include: ["src/domain/**/*.ts", "src/server/**/*.ts", "src/features/shared/*.ts"],
       exclude: [
         "**/*.test.ts",
         "**/index.ts",
@@ -25,9 +25,16 @@ export default defineConfig({
         "src/server/auth/session.ts",
         "src/server/auth/supabase/server-client.ts",
         "src/server/ledger/service.ts",
+        "src/server/finance/service.ts",
         "**/*.test-helpers.ts",
       ],
       thresholds: {
+        "src/domain/finance/**": {
+          branches: 95,
+          functions: 100,
+          lines: 95,
+          statements: 95,
+        },
         "src/domain/ledger/**": {
           branches: 95,
           functions: 100,

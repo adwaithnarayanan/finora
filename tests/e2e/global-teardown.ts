@@ -6,6 +6,8 @@ import pg from "pg";
 import { readLocalSupabase } from "../../scripts/lib/local-supabase.mjs";
 import { unlinkOwners } from "../../scripts/lib/owners.mjs";
 
+import { purgeOwnerData } from "../support/purge";
+
 import { USERS_FILE, e2eUsers } from "./support/fixtures";
 
 export default async function globalTeardown() {
@@ -16,14 +18,16 @@ export default async function globalTeardown() {
   const db = new pg.Client({ connectionString: local.migrationDatabaseUrl.replace(/\?.*$/, "") });
   await db.connect();
   try {
-    await unlinkOwners(db, [users.owner.ownerId]);
+    // The run created accounts and posted entries for the owner; remove them first.
+    const ownerIds = [users.owner.ownerId, users.inactive.ownerId];
+    await purgeOwnerData(db, ownerIds);
+    await unlinkOwners(db, ownerIds);
   } finally {
     await db.end();
   }
   const admin = createClient(local.apiUrl, local.secretKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   }).auth.admin;
-  await admin.deleteUser(users.owner.userId);
-  await admin.deleteUser(users.stranger.userId);
+  for (const user of Object.values(users)) await admin.deleteUser(user.userId);
   rmSync(USERS_FILE);
 }

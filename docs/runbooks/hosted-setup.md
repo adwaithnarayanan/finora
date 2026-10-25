@@ -5,15 +5,10 @@ destructive commands against a hosted database.
 
 ## 1. Auth settings (dashboard → Authentication), matching `supabase/config.toml`
 
-- Sign-ups: **disabled** ("Allow new users to sign up" off). Keep the email
-  provider itself enabled.
-- Confirm email: **on**. Secure password change: **on**.
-- Minimum password length 12; require lower, upper, digits.
-- Site URL: the production origin. Redirect URLs: `<origin>/auth/confirm` only.
-- Email templates: copy `supabase/templates/invite.html` and `recovery.html`
-  (token-hash links to `{{ .SiteURL }}/auth/confirm`).
-- Configure a real SMTP provider (the default sender is rate-limited).
-- Anonymous sign-ins and all external providers: off.
+Current mode is email/password: follow `docs/runbooks/owner-access.md`
+section 5. In short, Email is on, sign-ups are off, and every other provider is
+off. Use the neutral email templates, OTP length 10 and empty Redirect URLs.
+(Google is deferred; see `docs/runbooks/google-oauth.md` when restoring it.)
 
 ## 2. Data API
 
@@ -41,10 +36,10 @@ transaction pooler, user `finora_app.<project-ref>`, port 6543), optionally
 
 ## 4. Owner
 
-```bash
-SUPABASE_URL=… SUPABASE_SECRET_KEY=… MIGRATION_DATABASE_URL=… NEXT_PUBLIC_SITE_URL=https://… \
-  npm run owner:provision -- --email owner@example.com
-```
+Explicit three-step provisioning (prepare, set-password, complete):
+`docs/runbooks/owner-access.md` section 1. Supply
+`SUPABASE_URL`, `SUPABASE_SECRET_KEY` and `MIGRATION_DATABASE_URL` in the shell
+for each command only.
 
 ## 5. Verify (catalog checks, as `postgres`)
 
@@ -55,10 +50,11 @@ SELECT has_schema_privilege('anon', 'finora', 'USAGE'),
        has_schema_privilege('authenticated', 'finora', 'USAGE');                       -- false, false
 -- Ledger (Milestone 3): triggers present and enabled ('O'), currencies seeded.
 SELECT tgrelid::regclass, tgname, tgenabled FROM pg_trigger
- WHERE tgrelid::regclass::text LIKE 'finora.%' AND NOT tgisinternal ORDER BY 1, 2;     -- 9 rows (incl. owners_set_updated_at), all 'O'
+ WHERE tgrelid::regclass::text LIKE 'finora.%' AND NOT tgisinternal ORDER BY 1, 2;     -- 17 rows (ledger, finance and owners_set_updated_at), all 'O'
 SELECT code, exponent FROM finora.currencies ORDER BY code;                           -- EUR GBP INR JPY KWD USD
 SELECT has_table_privilege('finora_app', 'finora.journal_lines', 'UPDATE'),
        has_table_privilege('finora_app', 'finora.journal_entries', 'DELETE');          -- false, false
 ```
 
-Then sign in as the owner, and confirm a second (non-owner) user is refused.
+Then work through the manual checklist in `docs/runbooks/owner-access.md`
+section 6.

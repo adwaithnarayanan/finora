@@ -7,6 +7,10 @@ import { safeNextPath } from "@/server/auth/redirect";
 
 export const metadata: Metadata = { title: "Sign in" };
 
+/**
+ * Email/password sign-in, the current method (ADR 0003). The deferred Google
+ * sign-in control is src/features/auth/google/google-sign-in-button.tsx.
+ */
 export default function LoginPage({ searchParams }: PageProps<"/login">) {
   return (
     <AuthCard title="Sign in" description="Finora is private. Only its owner can sign in.">
@@ -17,14 +21,8 @@ export default function LoginPage({ searchParams }: PageProps<"/login">) {
   );
 }
 
-async function LoginFormWithParams({
-  searchParams,
-}: Pick<PageProps<"/login">, "searchParams">) {
+async function LoginFormWithParams({ searchParams }: Pick<PageProps<"/login">, "searchParams">) {
   const params = await searchParams;
   const next = typeof params.next === "string" ? safeNextPath(params.next) : undefined;
-  const notice =
-    params.error === "link"
-      ? "That link is invalid or has expired. Request a new one."
-      : undefined;
-  return <LoginForm next={next} notice={notice} />;
+  return <LoginForm next={next} />;
 }

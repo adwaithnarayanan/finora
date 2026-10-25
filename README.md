@@ -1,9 +1,10 @@
 # Finora
 
-Private, double-entry personal finance PWA. Currently at **Milestone 3:
-double-entry ledger core** on top of the Milestone 2 foundation (owner
-identity, Supabase Auth, Postgres roles and RLS). The ledger is a server-side
-API only; there is no financial UI yet.
+Private, double-entry personal finance PWA. Currently at **Milestone 4B:
+financial accounts and basic transactions** (bank and cash accounts, opening
+balances, income, expenses and transfers), built on the double-entry ledger
+core (Milestone 3) and the database/auth foundation (Milestone 2). Sign-in
+uses **email and password**; Google OAuth (Milestone 4A) is deferred.
 
 Architecture and decisions: [`docs/adr/`](docs/adr/). Operations:
 [`docs/runbooks/`](docs/runbooks/).
@@ -40,13 +41,29 @@ never needed by the app. Local db scripts and all tests read the local stack
 directly from `supabase status`; they do not use `.env` files and refuse
 non-loopback targets.
 
-Provision a local owner (sends an invite to the local inbox at
-http://127.0.0.1:55324; open it, verify, and set a password):
+## Sign-in (email and password; Google deferred)
+
+The only way in is the owner's email and password. There is no public
+sign-up and no email-based reset. A correct password alone never grants
+access: an operator explicitly approves the account and maps it to the owner.
+Design: [ADR 0003](docs/adr/0003-authentication-and-owner-identity.md).
+Operations (provisioning, rotation, hosted settings):
+[`docs/runbooks/owner-access.md`](docs/runbooks/owner-access.md).
+
+Provision a local owner. The password is typed at a hidden prompt, never
+passed as an argument:
 
 ```bash
-npm run owner:provision -- --local --email you@example.com
-npm run dev
+npm run owner:provision -- prepare      --local --email you@example.com
+npm run owner:provision -- set-password --local --email you@example.com
+npm run owner:provision -- complete     --local --email you@example.com
+npm run dev   # sign in at http://localhost:3000
 ```
+
+Rotate the password with `set-password` again (this ends all sessions).
+`relink` moves the owner to a different account and keeps its data; `cancel`
+deletes a prepared user that was never completed. To bring Google back, see
+"Restoring Google OAuth" in ADR 0003.
 
 Production values are set in the hosting provider's environment settings;
 see [`docs/runbooks/hosted-setup.md`](docs/runbooks/hosted-setup.md).
@@ -59,17 +76,38 @@ see [`docs/runbooks/hosted-setup.md`](docs/runbooks/hosted-setup.md).
 | `npm run lint` | ESLint (zero warnings), incl. domain and infrastructure import boundaries |
 | `npm run typecheck` | Generate Next.js route types, then `tsc --noEmit` |
 | `npm test` | Unit and component tests (no database or credentials needed) |
-| `npm run test:coverage` | Unit tests with coverage; enforces ≥95% on `src/domain/money` and `src/domain/ledger` |
+| `npm run test:coverage` | Unit tests with coverage; enforces ≥95% on `src/domain/money`, `src/domain/ledger` and `src/domain/finance` |
 | `npm run test:integration` | Real Postgres + Supabase Auth tests (needs the local stack) |
 | `npm run build` | Production build (no secrets needed) |
 | `npm start` | Serve the production build |
 | `npm run test:e2e` | Playwright against the production build + local stack (`npm run build` first) |
 | `npm run check` | Lint, typecheck, coverage and build |
 
+## Accounts and transactions
+
+- `/accounts`: bank and cash accounts with balances derived from posted
+  journal lines (never stored). Create one with an optional opening balance,
+  which is posted against opening-balance equity, not recorded as income.
+  Edit the name or type; archive (history kept), restore, or delete one that
+  has no history.
+- `/transactions/new`: record income, an expense, or a transfer. The browser
+  submits intent only; server-side templates build the journal lines.
+- `/transactions`: history with search and filters (date, type, account,
+  category). Each transaction can have its payee or note edited, or be voided
+  through a ledger reversal. Opening balances are corrected from the account
+  page (reversal plus replacement).
+- `/categories`: income and expense categories; defaults are added the first
+  time.
+
+Amounts are typed as decimals, parsed exactly, and shown in `en-IN` format;
+INR is the default currency. The accounting treatment is in
+[ADR 0006](docs/adr/0006-accounts-and-transactions.md).
+
 ## Ledger
 
 `src/domain/ledger` (pure rules) and `src/server/ledger` (the application
-service) implement a double-entry ledger: ledger accounts, draft and posted
+service and the in-transaction `ledgerOperations` that the finance service
+composes) implement a double-entry ledger: ledger accounts, draft and posted
 journal entries, positive minor-unit amounts with explicit debit/credit sides,
 per-currency balancing, idempotent posting, reversals and atomic corrections.
 Posted history is immutable and balances are always derived from posted
@@ -94,13 +132,14 @@ await ledger.postEntry(owner, {
 });
 ```
 
-No route or server action exposes it yet. To work on it:
+No route or server action exposes the ledger directly; user-facing features
+go through `src/server/finance` and its posting templates. To work on it:
 
 ```bash
 npm run db:local:setup      # apply the ledger migration locally
 npm run db:local:drift      # schema.prisma and migrations agree
 npm test -- src/domain/ledger
-npx vitest run --config vitest.integration.config.mts tests/integration/ledger-*.test.ts
+npx vitest run --config vitest.integration.config.mts tests/integration/ledger-*.test.ts tests/integration/finance-*.test.ts
 ```
 
 ## Database workflow (local)
@@ -132,7 +171,12 @@ Backups: [`docs/runbooks/backup-and-restore.md`](docs/runbooks/backup-and-restor
 - Integration and e2e tests create uniquely named users/owners (`itest-*`,
   `e2e-*`) in the **local** stack and delete them afterwards. They obtain
   connection details from `supabase status`, never from `.env` files.
-- Auth emails go to the local Mailpit inbox; nothing is sent externally.
+- Password sign-in is tested for real against the local Auth server, in the
+  integration and e2e suites. Tests that prove other sign-in methods are
+  refused build those sessions in the **local** Auth database
+  (`tests/support/google-simulation.ts`). Google itself is never contacted.
+- Local auth emails go to the Mailpit inbox (http://127.0.0.1:55324);
+  nothing is sent externally.
 
 ## Layout
 
@@ -140,10 +184,11 @@ Backups: [`docs/runbooks/backup-and-restore.md`](docs/runbooks/backup-and-restor
 src/app/            routes: (auth) public pages, (app) owner-only pages
 src/proxy.ts        session refresh + optimistic redirects (not the security boundary)
 src/components/     shared UI (shadcn/ui in components/ui)
-src/domain/         pure TypeScript business rules (money, owner, ledger); no framework/infra imports
-src/features/       feature UI and server actions (auth, home)
+src/domain/         pure TypeScript business rules (money, owner, ledger, finance); no framework/infra imports
+src/features/       feature UI and server actions (auth, accounts, transactions, categories)
 src/server/auth/    provider-neutral authorisation + Supabase adapter
 src/server/ledger/  ledger application service (server-only API)
+src/server/finance/ accounts, categories, transactions (posting templates over the ledger)
 src/server/db/      Prisma client (private), RLS scope helpers, ledger store
 src/server/env.ts   Zod-validated server configuration
 prisma/             schema and SQL migrations (roles, grants, RLS)

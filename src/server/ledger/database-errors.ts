@@ -2,8 +2,8 @@ import { LedgerError } from "@/domain/ledger";
 
 import { LedgerIntegrityError } from "./errors";
 
-/** Database messages raised by Finora's own triggers start with this prefix. */
-const TRIGGER_PREFIX = "finora.ledger: ";
+/** Database messages raised by Finora's own triggers start with one of these prefixes. */
+const TRIGGER_PREFIX = /finora\.(?:ledger|finance): /;
 
 /**
  * SQLSTATEs that mean "the database refused this change": class 23 (integrity
@@ -20,9 +20,9 @@ const SQLSTATE = /^[0-9A-Z]{5}$/;
 export function translateDatabaseError(error: unknown): never {
   if (error instanceof LedgerError) throw error;
   const message = error instanceof Error ? error.message : "";
-  const start = message.indexOf(TRIGGER_PREFIX);
-  if (start !== -1) {
-    const reason = message.slice(start + TRIGGER_PREFIX.length).split("\n")[0]!.trim();
+  const prefix = TRIGGER_PREFIX.exec(message);
+  if (prefix) {
+    const reason = message.slice(prefix.index + prefix[0].length).split("\n")[0]!.trim();
     throw new LedgerIntegrityError(reason);
   }
   if (sqlStates(error).some((code) => REFUSAL_SQLSTATE.test(code))) {

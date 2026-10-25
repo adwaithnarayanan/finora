@@ -139,50 +139,213 @@ async function replayed(
 }
 
 /**
+ * Runs a whole owner-scoped transaction and converts a database refusal into
+ * a LedgerIntegrityError (see database-errors.ts). Every service that commits
+ * ledger writes, including ones composed with ledgerOperations, goes through it.
+ */
+export async function runTranslated<T>(transaction: () => Promise<T>): Promise<T> {
+  try {
+    return await transaction();
+  } catch (error) {
+    translateDatabaseError(error);
+  }
+}
+
+/** Creates the entry and its lines, then posts it, in the current transaction. */
+async function insertPosted(
+  store: LedgerStore,
+  entry: Parameters<LedgerStore["insertDraft"]>[0],
+  lines: Parameters<LedgerStore["replaceLines"]>[1],
+): Promise<JournalEntryId | null> {
+  const id = await store.insertDraft(entry);
+  if (id === null) return null;
+  await store.replaceLines(id, lines);
+  if (!(await store.markPosted(id))) throw new LedgerIntegrityError("entry was not a draft");
+  return id;
+}
+
+/**
+ * Ledger operations that run inside a caller's owner-scoped transaction, so
+ * other server services (src/server/finance) can commit their business
+ * records and the journal entries in one database transaction. They never
+ * open or commit a transaction themselves: callers run them with a store
+ * bound to an owner scope, inside runTranslated(). Same rules and idempotency
+ * as the service methods below, which delegate here.
+ */
+export const ledgerOperations = {
+  async createAccount(
+    store: LedgerStore,
+    input: { readonly name: string; readonly kind: string; readonly currency: string },
+  ): Promise<LedgerAccount> {
+    const name = parseAccountName(input.name);
+    const kind = parseKind(input.kind);
+    const currency = typeof input.currency === "string" ? await store.findCurrency(input.currency) : null;
+    if (!currency) throw new InvalidLedgerInputError("Unsupported currency");
+    const account = await store.insertAccount({ name, kind, currency });
+    if (!account) throw new DuplicateLedgerAccountError();
+    return account;
+  },
+
+  /**
+   * Creates and posts a balanced entry in one step. The idempotency key makes
+   * retries safe: the same request returns the original entry, a different
+   * request with the same key is rejected.
+   */
+  async postEntry(store: LedgerStore, input: EntryInput & { readonly idempotencyKey: string }): Promise<EntryResult> {
+    const parsed = parseEntryInput(input);
+    const key = parseIdempotencyKey(input.idempotencyKey);
+    const accounts = await lookupAccounts(store, parsed.inputs);
+    const lines = buildLines(parsed.inputs, accounts);
+    assertPostable(lines, accounts);
+    const idempotency = {
+      key,
+      fingerprint: fingerprint({ kind: "post-entry", entryDate: parsed.entryDate, description: parsed.description, lines }),
+    };
+    const id = await insertPosted(
+      store,
+      { entryDate: parsed.entryDate, description: parsed.description, idempotency },
+      lines,
+    );
+    if (id === null) {
+      return { entry: (await replayed(store, key, idempotency.fingerprint))!, replayed: true };
+    }
+    return { entry: await mustFind(store, id), replayed: false };
+  },
+
+  async getEntry(store: LedgerStore, entryId: string): Promise<JournalEntry> {
+    return mustFind(store, parseJournalEntryId(entryId));
+  },
+
+  /** Balance reconstructed from posted lines only. */
+  async accountBalance(
+    store: LedgerStore,
+    accountId: string,
+  ): Promise<{ account: LedgerAccount; balance: AccountBalance }> {
+    const id = parseLedgerAccountId(accountId);
+    const [account] = await store.findAccounts([id]);
+    if (!account) throw new LedgerNotFoundError("account");
+    const totals = await store.postedTotals(id);
+    return {
+      account,
+      balance: balanceFromTotals(
+        account,
+        Money.ofMinor(totals.debits, account.currency),
+        Money.ofMinor(totals.credits, account.currency),
+      ),
+    };
+  },
+
+  /**
+   * Posts a new entry that exactly cancels a posted entry, linked to it. The
+   * original is untouched. Retrying with the same key returns the same
+   * reversal; any other attempt on a reversed entry fails with
+   * EntryAlreadyReversedError.
+   */
+  async reverseEntry(
+    store: LedgerStore,
+    entryId: string,
+    input: { readonly entryDate: string; readonly description: string; readonly idempotencyKey: string },
+  ): Promise<EntryResult> {
+    const id = parseJournalEntryId(entryId);
+    const entryDate = parseLedgerDate(input.entryDate);
+    const description = parseDescription(input.description);
+    const key = parseIdempotencyKey(input.idempotencyKey);
+    const idempotency = {
+      key,
+      fingerprint: fingerprint({ kind: "reverse-entry", entryId: id, entryDate, description }),
+    };
+    const original = await store.lockEntry(id);
+    if (!original) throw new LedgerNotFoundError("entry");
+    const previous = await replayed(store, key, idempotency.fingerprint);
+    if (previous) return { entry: previous, replayed: true };
+
+    const lines = planReversal(original);
+    const reversalId = await insertPosted(store, { entryDate, description, idempotency, reversesEntryId: id }, lines);
+    // Null: the key was taken concurrently by a different request.
+    if (reversalId === null) throw new IdempotencyConflictError();
+    return { entry: await mustFind(store, reversalId), replayed: false };
+  },
+
+  /**
+   * Reverses a posted entry and posts its replacement in one transaction, so
+   * there is never a moment with only one of the two. The replacement links
+   * to the original via `replacesEntryId`.
+   */
+  async correctEntry(store: LedgerStore, entryId: string, input: CorrectionInput): Promise<CorrectionResult> {
+    const id = parseJournalEntryId(entryId);
+    const entryDate = parseLedgerDate(input.entryDate);
+    const description = parseDescription(input.description);
+    const key = parseIdempotencyKey(input.idempotencyKey);
+    const replacementInput = parseEntryInput(input.replacement);
+    const original = await store.lockEntry(id);
+    if (!original) throw new LedgerNotFoundError("entry");
+
+    const accounts = await lookupAccounts(store, replacementInput.inputs);
+    const replacementLines = buildLines(replacementInput.inputs, accounts);
+    assertPostable(replacementLines, accounts);
+    const idempotency = {
+      key,
+      fingerprint: fingerprint({
+        kind: "correct-entry",
+        entryId: id,
+        entryDate,
+        description,
+        replacement: {
+          entryDate: replacementInput.entryDate,
+          description: replacementInput.description,
+          lines: replacementLines,
+        },
+      }),
+    };
+
+    const previous = await replayed(store, key, idempotency.fingerprint);
+    if (previous) {
+      const refreshed = await mustFind(store, id);
+      return { reversal: previous, replacement: await mustFind(store, refreshed.replacedByEntryId!), replayed: true };
+    }
+
+    const reversalLines = planReversal(original);
+    const reversalId = await insertPosted(
+      store,
+      { entryDate, description, idempotency, reversesEntryId: id },
+      reversalLines,
+    );
+    if (reversalId === null) throw new IdempotencyConflictError();
+    const replacementId = await insertPosted(
+      store,
+      {
+        entryDate: replacementInput.entryDate,
+        description: replacementInput.description,
+        idempotency: null,
+        replacesEntryId: id,
+      },
+      replacementLines,
+    );
+    if (replacementId === null) throw new LedgerIntegrityError("replacement was not created");
+    return {
+      reversal: await mustFind(store, reversalId),
+      replacement: await mustFind(store, replacementId),
+      replayed: false,
+    };
+  },
+};
+
+/**
  * The ledger's application service. Every method takes an `AuthorizedOwner`
  * (from `requireOwner()`), never an owner id, and does all of its work in one
  * owner-scoped transaction. Domain rules run first for precise errors; the
  * database re-checks the invariants at COMMIT regardless.
  */
 export function createLedgerService(run: LedgerRunner) {
-  const inTransaction = async <T>(
-    owner: AuthorizedOwner,
-    work: (store: LedgerStore) => Promise<T>,
-  ): Promise<T> => {
-    try {
-      return await run(owner, work);
-    } catch (error) {
-      translateDatabaseError(error);
-    }
-  };
-
-  /** Creates the entry and its lines, then posts it, in the current transaction. */
-  async function insertPosted(
-    store: LedgerStore,
-    entry: Parameters<LedgerStore["insertDraft"]>[0],
-    lines: Parameters<LedgerStore["replaceLines"]>[1],
-  ): Promise<JournalEntryId | null> {
-    const id = await store.insertDraft(entry);
-    if (id === null) return null;
-    await store.replaceLines(id, lines);
-    if (!(await store.markPosted(id))) throw new LedgerIntegrityError("entry was not a draft");
-    return id;
-  }
+  const inTransaction = <T>(owner: AuthorizedOwner, work: (store: LedgerStore) => Promise<T>): Promise<T> =>
+    runTranslated(() => run(owner, work));
 
   return {
     async createAccount(
       owner: AuthorizedOwner,
       input: { readonly name: string; readonly kind: string; readonly currency: string },
     ): Promise<LedgerAccount> {
-      const name = parseAccountName(input.name);
-      const kind = parseKind(input.kind);
-      return inTransaction(owner, async (store) => {
-        const currency = typeof input.currency === "string" ? await store.findCurrency(input.currency) : null;
-        if (!currency) throw new InvalidLedgerInputError("Unsupported currency");
-        const account = await store.insertAccount({ name, kind, currency });
-        if (!account) throw new DuplicateLedgerAccountError();
-        return account;
-      });
+      return inTransaction(owner, (store) => ledgerOperations.createAccount(store, input));
     },
 
     /** Creates a draft (balance not required). With a key, retries return the same draft. */
@@ -253,40 +416,13 @@ export function createLedgerService(run: LedgerRunner) {
       });
     },
 
-    /**
-     * Creates and posts a balanced entry in one step. The idempotency key makes
-     * retries safe: the same request returns the original entry, a different
-     * request with the same key is rejected.
-     */
-    async postEntry(
-      owner: AuthorizedOwner,
-      input: EntryInput & { readonly idempotencyKey: string },
-    ): Promise<EntryResult> {
-      const parsed = parseEntryInput(input);
-      const key = parseIdempotencyKey(input.idempotencyKey);
-      return inTransaction(owner, async (store) => {
-        const accounts = await lookupAccounts(store, parsed.inputs);
-        const lines = buildLines(parsed.inputs, accounts);
-        assertPostable(lines, accounts);
-        const idempotency = {
-          key,
-          fingerprint: fingerprint({ kind: "post-entry", entryDate: parsed.entryDate, description: parsed.description, lines }),
-        };
-        const id = await insertPosted(
-          store,
-          { entryDate: parsed.entryDate, description: parsed.description, idempotency },
-          lines,
-        );
-        if (id === null) {
-          return { entry: (await replayed(store, key, idempotency.fingerprint))!, replayed: true };
-        }
-        return { entry: await mustFind(store, id), replayed: false };
-      });
+    /** Creates and posts a balanced entry in one step (idempotent; see ledgerOperations). */
+    async postEntry(owner: AuthorizedOwner, input: EntryInput & { readonly idempotencyKey: string }): Promise<EntryResult> {
+      return inTransaction(owner, (store) => ledgerOperations.postEntry(store, input));
     },
 
     async getEntry(owner: AuthorizedOwner, entryId: string): Promise<JournalEntry> {
-      const id = parseJournalEntryId(entryId);
-      return inTransaction(owner, (store) => mustFind(store, id));
+      return inTransaction(owner, (store) => ledgerOperations.getEntry(store, entryId));
     },
 
     /** Balance reconstructed from posted lines only. */
@@ -294,132 +430,21 @@ export function createLedgerService(run: LedgerRunner) {
       owner: AuthorizedOwner,
       accountId: string,
     ): Promise<{ account: LedgerAccount; balance: AccountBalance }> {
-      const id = parseLedgerAccountId(accountId);
-      return inTransaction(owner, async (store) => {
-        const [account] = await store.findAccounts([id]);
-        if (!account) throw new LedgerNotFoundError("account");
-        const totals = await store.postedTotals(id);
-        return {
-          account,
-          balance: balanceFromTotals(
-            account,
-            Money.ofMinor(totals.debits, account.currency),
-            Money.ofMinor(totals.credits, account.currency),
-          ),
-        };
-      });
+      return inTransaction(owner, (store) => ledgerOperations.accountBalance(store, accountId));
     },
 
-    /**
-     * Posts a new entry that exactly cancels a posted entry, linked to it. The
-     * original is untouched. Retrying with the same key returns the same
-     * reversal; any other attempt on a reversed entry fails with
-     * EntryAlreadyReversedError.
-     */
+    /** Linked, exactly offsetting reversal (idempotent; see ledgerOperations). */
     async reverseEntry(
       owner: AuthorizedOwner,
       entryId: string,
       input: { readonly entryDate: string; readonly description: string; readonly idempotencyKey: string },
     ): Promise<EntryResult> {
-      const id = parseJournalEntryId(entryId);
-      const entryDate = parseLedgerDate(input.entryDate);
-      const description = parseDescription(input.description);
-      const key = parseIdempotencyKey(input.idempotencyKey);
-      const idempotency = {
-        key,
-        fingerprint: fingerprint({ kind: "reverse-entry", entryId: id, entryDate, description }),
-      };
-      return inTransaction(owner, async (store) => {
-        const original = await store.lockEntry(id);
-        if (!original) throw new LedgerNotFoundError("entry");
-        const previous = await replayed(store, key, idempotency.fingerprint);
-        if (previous) return { entry: previous, replayed: true };
-
-        const lines = planReversal(original);
-        const reversalId = await insertPosted(
-          store,
-          { entryDate, description, idempotency, reversesEntryId: id },
-          lines,
-        );
-        if (reversalId === null) {
-          // The key was taken concurrently by a different request.
-          throw new IdempotencyConflictError();
-        }
-        return { entry: await mustFind(store, reversalId), replayed: false };
-      });
+      return inTransaction(owner, (store) => ledgerOperations.reverseEntry(store, entryId, input));
     },
 
-    /**
-     * Reverses a posted entry and posts its replacement in one transaction, so
-     * there is never a moment with only one of the two. The replacement links
-     * to the original via `replacesEntryId`.
-     */
-    async correctEntry(
-      owner: AuthorizedOwner,
-      entryId: string,
-      input: CorrectionInput,
-    ): Promise<CorrectionResult> {
-      const id = parseJournalEntryId(entryId);
-      const entryDate = parseLedgerDate(input.entryDate);
-      const description = parseDescription(input.description);
-      const key = parseIdempotencyKey(input.idempotencyKey);
-      const replacementInput = parseEntryInput(input.replacement);
-      return inTransaction(owner, async (store) => {
-        const original = await store.lockEntry(id);
-        if (!original) throw new LedgerNotFoundError("entry");
-
-        const accounts = await lookupAccounts(store, replacementInput.inputs);
-        const replacementLines = buildLines(replacementInput.inputs, accounts);
-        assertPostable(replacementLines, accounts);
-        const idempotency = {
-          key,
-          fingerprint: fingerprint({
-            kind: "correct-entry",
-            entryId: id,
-            entryDate,
-            description,
-            replacement: {
-              entryDate: replacementInput.entryDate,
-              description: replacementInput.description,
-              lines: replacementLines,
-            },
-          }),
-        };
-
-        const previous = await replayed(store, key, idempotency.fingerprint);
-        if (previous) {
-          const refreshed = await mustFind(store, id);
-          return {
-            reversal: previous,
-            replacement: await mustFind(store, refreshed.replacedByEntryId!),
-            replayed: true,
-          };
-        }
-
-        const reversalLines = planReversal(original);
-        const reversalId = await insertPosted(
-          store,
-          { entryDate, description, idempotency, reversesEntryId: id },
-          reversalLines,
-        );
-        if (reversalId === null) throw new IdempotencyConflictError();
-        const replacementId = await insertPosted(
-          store,
-          {
-            entryDate: replacementInput.entryDate,
-            description: replacementInput.description,
-            idempotency: null,
-            replacesEntryId: id,
-          },
-          replacementLines,
-        );
-        if (replacementId === null) throw new LedgerIntegrityError("replacement was not created");
-        return {
-          reversal: await mustFind(store, reversalId),
-          replacement: await mustFind(store, replacementId),
-          replayed: false,
-        };
-      });
+    /** Reversal plus linked replacement in one transaction (idempotent; see ledgerOperations). */
+    async correctEntry(owner: AuthorizedOwner, entryId: string, input: CorrectionInput): Promise<CorrectionResult> {
+      return inTransaction(owner, (store) => ledgerOperations.correctEntry(store, entryId, input));
     },
   };
 }

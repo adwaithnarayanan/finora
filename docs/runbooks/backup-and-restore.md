@@ -15,8 +15,9 @@ functions, RLS policies, grants to `finora_app`, and the Prisma migration
 history. It does **not** contain:
 
 - roles (`finora_app` is cluster-wide; recreate it before restoring),
-- Supabase Auth users (`auth` schema): recreate or re-invite the owner and
-  re-link with `npm run owner:provision -- --existing`.
+- Supabase Auth users (`auth` schema): in a new project, run `prepare --relink`,
+  `set-password` and `relink` for the owner's email (the restored owner id and
+  data are kept); see `docs/runbooks/owner-access.md`.
 
 Do **not** add `--no-privileges` or `--no-acl`: that drops the grants the app
 role needs, and the restored app would fail closed.

@@ -17,14 +17,18 @@ datasource db {
 /// An application owner. `id` is Finora's own identifier and is never the
 /// auth provider's user id. Future owner-scoped tables reference it.
 model Owner {
-  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime        @default(now()) @map("updated_at") @db.Timestamptz(6)
+  id                   String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  createdAt            DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime              @default(now()) @map("updated_at") @db.Timestamptz(6)
   /// Non-null revokes access without deleting the owner's data.
-  disabledAt     DateTime?       @map("disabled_at") @db.Timestamptz(6)
-  identities     OwnerIdentity[]
-  ledgerAccounts LedgerAccount[]
-  journalEntries JournalEntry[]
+  disabledAt           DateTime?             @map("disabled_at") @db.Timestamptz(6)
+  identities           OwnerIdentity[]
+  ledgerAccounts       LedgerAccount[]
+  journalEntries       JournalEntry[]
+  financialAccounts    FinancialAccount[]
+  categories           Category[]
+  systemLedgerAccounts SystemLedgerAccount[]
+  transactions         FinanceTransaction[]
 
   @@map("owners")
   @@schema("finora")
@@ -94,16 +98,19 @@ enum JournalLineSide {
 
 /// An accounting primitive (not a user-facing bank account). Single-currency.
 model LedgerAccount {
-  id           String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  ownerId      String            @map("owner_id") @db.Uuid
-  name         String
-  kind         LedgerAccountKind
-  currencyCode String            @map("currency_code") @db.Char(3)
-  createdAt    DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt    DateTime          @default(now()) @map("updated_at") @db.Timestamptz(6)
-  owner        Owner             @relation(fields: [ownerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  currency     Currency          @relation(fields: [currencyCode], references: [code], onDelete: Restrict, onUpdate: Restrict)
-  lines        JournalLine[]
+  id                    String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId               String                  @map("owner_id") @db.Uuid
+  name                  String
+  kind                  LedgerAccountKind
+  currencyCode          String                  @map("currency_code") @db.Char(3)
+  createdAt             DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                @default(now()) @map("updated_at") @db.Timestamptz(6)
+  owner                 Owner                   @relation(fields: [ownerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  currency              Currency                @relation(fields: [currencyCode], references: [code], onDelete: Restrict, onUpdate: Restrict)
+  lines                 JournalLine[]
+  financialAccounts     FinancialAccount[]
+  categoryLedgerAccount CategoryLedgerAccount[]
+  systemLedgerAccount   SystemLedgerAccount[]
 
   /// Target of the composite foreign key from journal lines: a line can only
   /// reference an account of the same owner and in the same currency.
@@ -114,31 +121,34 @@ model LedgerAccount {
 }
 
 model JournalEntry {
-  id                     String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  ownerId                String             @map("owner_id") @db.Uuid
-  status                 JournalEntryStatus @default(draft)
+  id                     String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId                String              @map("owner_id") @db.Uuid
+  status                 JournalEntryStatus  @default(draft)
   /// Accounting (effective) date of the entry.
-  entryDate              DateTime           @map("entry_date") @db.Date
+  entryDate              DateTime            @map("entry_date") @db.Date
   description            String
   /// Client-chosen retry key, unique per owner. Null for entries created
   /// without one (e.g. the replacement half of a correction).
-  idempotencyKey         String?            @map("idempotency_key")
+  idempotencyKey         String?             @map("idempotency_key")
   /// SHA-256 of the canonical request that used `idempotencyKey`.
-  idempotencyFingerprint String?            @map("idempotency_fingerprint") @db.Char(64)
+  idempotencyFingerprint String?             @map("idempotency_fingerprint") @db.Char(64)
   /// Set on a reversal: the posted entry whose effect this entry cancels.
-  reversesEntryId        String?            @map("reverses_entry_id") @db.Uuid
+  reversesEntryId        String?             @map("reverses_entry_id") @db.Uuid
   /// Set on a replacement: the reversed entry this entry supersedes.
-  replacesEntryId        String?            @map("replaces_entry_id") @db.Uuid
-  createdAt              DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt              DateTime           @default(now()) @map("updated_at") @db.Timestamptz(6)
+  replacesEntryId        String?             @map("replaces_entry_id") @db.Uuid
+  createdAt              DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime            @default(now()) @map("updated_at") @db.Timestamptz(6)
   /// Database time of the draft -> posted transition (set by trigger).
-  postedAt               DateTime?          @map("posted_at") @db.Timestamptz(6)
-  owner                  Owner              @relation(fields: [ownerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  reverses               JournalEntry?      @relation("Reversal", fields: [reversesEntryId, ownerId], references: [id, ownerId], onDelete: Restrict, onUpdate: Restrict, map: "journal_entries_reverses_entry_fkey")
-  reversedBy             JournalEntry?      @relation("Reversal")
-  replaces               JournalEntry?      @relation("Replacement", fields: [replacesEntryId, ownerId], references: [id, ownerId], onDelete: Restrict, onUpdate: Restrict, map: "journal_entries_replaces_entry_fkey")
-  replacedBy             JournalEntry?      @relation("Replacement")
+  postedAt               DateTime?           @map("posted_at") @db.Timestamptz(6)
+  owner                  Owner               @relation(fields: [ownerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  reverses               JournalEntry?       @relation("Reversal", fields: [reversesEntryId, ownerId], references: [id, ownerId], onDelete: Restrict, onUpdate: Restrict, map: "journal_entries_reverses_entry_fkey")
+  reversedBy             JournalEntry?       @relation("Reversal")
+  replaces               JournalEntry?       @relation("Replacement", fields: [replacesEntryId, ownerId], references: [id, ownerId], onDelete: Restrict, onUpdate: Restrict, map: "journal_entries_replaces_entry_fkey")
+  replacedBy             JournalEntry?       @relation("Replacement")
   lines                  JournalLine[]
+  /// The business transaction this entry records (src/server/finance).
+  transaction            FinanceTransaction? @relation("TransactionEntry")
+  voidedTransaction      FinanceTransaction? @relation("TransactionReversal")
 
   /// Target of composite foreign keys that keep references within one owner.
   @@unique([id, ownerId], map: "journal_entries_id_owner_key")
@@ -172,5 +182,168 @@ model JournalLine {
   @@unique([entryId, ownerId, lineNo], map: "journal_lines_entry_line_key")
   @@index([accountId, ownerId, currencyCode], map: "journal_lines_account_idx")
   @@map("journal_lines")
+  @@schema("finora")
+}
+
+// ---------------------------------------------------------------------------
+// Financial accounts and transactions (docs/adr/0006-accounts-and-transactions.md).
+// Business records on top of the ledger: every amount here is also, exactly,
+// a posted journal entry. Balances are never stored; they come from the ledger.
+
+enum FinancialAccountType {
+  bank
+  cash
+
+  @@map("financial_account_type")
+  @@schema("finora")
+}
+
+enum CategoryKind {
+  income
+  expense
+
+  @@map("category_kind")
+  @@schema("finora")
+}
+
+enum TransactionKind {
+  opening_balance
+  income
+  expense
+  transfer
+
+  @@map("transaction_kind")
+  @@schema("finora")
+}
+
+enum SystemLedgerPurpose {
+  opening_balance_equity
+
+  @@map("system_ledger_purpose")
+  @@schema("finora")
+}
+
+/// A user-facing bank or cash account, backed by exactly one asset ledger account.
+model FinancialAccount {
+  id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId             String               @map("owner_id") @db.Uuid
+  name                String
+  type                FinancialAccountType
+  /// Fixed at creation: it is the currency of the underlying ledger account.
+  currencyCode        String               @map("currency_code") @db.Char(3)
+  ledgerAccountId     String               @map("ledger_account_id") @db.Uuid
+  /// Idempotency key of the create request (retries return the same account).
+  creationKey         String               @map("creation_key")
+  creationFingerprint String               @map("creation_fingerprint") @db.Char(64)
+  createdAt           DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime             @default(now()) @map("updated_at") @db.Timestamptz(6)
+  /// Non-null: archived; no new ordinary transactions. History is kept.
+  archivedAt          DateTime?            @map("archived_at") @db.Timestamptz(6)
+  owner               Owner                @relation(fields: [ownerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  ledgerAccount       LedgerAccount        @relation(fields: [ledgerAccountId, ownerId, currencyCode], references: [id, ownerId, currencyCode], onDelete: Restrict, onUpdate: Restrict, map: "financial_accounts_ledger_account_fkey")
+  outgoing            FinanceTransaction[] @relation("TransactionSource")
+  incoming            FinanceTransaction[] @relation("TransactionDestination")
+
+  @@unique([id, ownerId], map: "financial_accounts_id_owner_key")
+  /// Target of transaction foreign keys: same owner and same currency.
+  @@unique([id, ownerId, currencyCode], map: "financial_accounts_id_owner_currency_key")
+  @@unique([ledgerAccountId, ownerId], map: "financial_accounts_ledger_account_key")
+  @@unique([ownerId, name], map: "financial_accounts_owner_name_key")
+  @@unique([ownerId, creationKey], map: "financial_accounts_owner_creation_key")
+  @@map("financial_accounts")
+  @@schema("finora")
+}
+
+/// Income or expense category. Backed by one ledger account per currency.
+model Category {
+  id             String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId        String                  @map("owner_id") @db.Uuid
+  name           String
+  kind           CategoryKind
+  createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                @default(now()) @map("updated_at") @db.Timestamptz(6)
+  archivedAt     DateTime?               @map("archived_at") @db.Timestamptz(6)
+  owner          Owner                   @relation(fields: [ownerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  ledgerAccounts CategoryLedgerAccount[]
+  transactions   FinanceTransaction[]
+
+  @@unique([id, ownerId], map: "categories_id_owner_key")
+  @@unique([ownerId, kind, name], map: "categories_owner_kind_name_key")
+  @@map("categories")
+  @@schema("finora")
+}
+
+/// The income/expense ledger account a category posts to in one currency.
+model CategoryLedgerAccount {
+  ownerId         String        @map("owner_id") @db.Uuid
+  categoryId      String        @map("category_id") @db.Uuid
+  currencyCode    String        @map("currency_code") @db.Char(3)
+  ledgerAccountId String        @map("ledger_account_id") @db.Uuid
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  category        Category      @relation(fields: [categoryId, ownerId], references: [id, ownerId], onDelete: Restrict, onUpdate: Restrict, map: "category_ledger_accounts_category_fkey")
+  ledgerAccount   LedgerAccount @relation(fields: [ledgerAccountId, ownerId, currencyCode], references: [id, ownerId, currencyCode], onDelete: Restrict, onUpdate: Restrict, map: "category_ledger_accounts_ledger_account_fkey")
+
+  @@id([categoryId, ownerId, currencyCode], map: "category_ledger_accounts_pkey")
+  @@unique([ledgerAccountId, ownerId], map: "category_ledger_accounts_ledger_account_key")
+  @@map("category_ledger_accounts")
+  @@schema("finora")
+}
+
+/// Ledger accounts Finora manages itself, e.g. the opening-balance equity account per currency.
+model SystemLedgerAccount {
+  ownerId         String              @map("owner_id") @db.Uuid
+  purpose         SystemLedgerPurpose
+  currencyCode    String              @map("currency_code") @db.Char(3)
+  ledgerAccountId String              @map("ledger_account_id") @db.Uuid
+  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  owner           Owner               @relation(fields: [ownerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  ledgerAccount   LedgerAccount       @relation(fields: [ledgerAccountId, ownerId, currencyCode], references: [id, ownerId, currencyCode], onDelete: Restrict, onUpdate: Restrict, map: "system_ledger_accounts_ledger_account_fkey")
+
+  @@id([ownerId, purpose, currencyCode], map: "system_ledger_accounts_pkey")
+  @@unique([ledgerAccountId, ownerId], map: "system_ledger_accounts_ledger_account_key")
+  @@map("system_ledger_accounts")
+  @@schema("finora")
+}
+
+/// The business meaning of one posted journal entry (income, expense, transfer, opening balance).
+model FinanceTransaction {
+  id                    String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId               String              @map("owner_id") @db.Uuid
+  kind                  TransactionKind
+  occurredOn            DateTime            @map("occurred_on") @db.Date
+  amountMinor           BigInt              @map("amount_minor")
+  currencyCode          String              @map("currency_code") @db.Char(3)
+  sourceAccountId       String?             @map("source_account_id") @db.Uuid
+  destinationAccountId  String?             @map("destination_account_id") @db.Uuid
+  categoryId            String?             @map("category_id") @db.Uuid
+  /// Editable metadata (no accounting effect).
+  payee                 String?
+  note                  String?
+  journalEntryId        String              @map("journal_entry_id") @db.Uuid
+  /// Set once when the transaction is voided by a posted reversal.
+  reversalEntryId       String?             @map("reversal_entry_id") @db.Uuid
+  voidedAt              DateTime?           @map("voided_at") @db.Timestamptz(6)
+  /// Set on a correction: the voided transaction this one replaces.
+  replacesTransactionId String?             @map("replaces_transaction_id") @db.Uuid
+  createdAt             DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime            @default(now()) @map("updated_at") @db.Timestamptz(6)
+  owner                 Owner               @relation(fields: [ownerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  source                FinancialAccount?   @relation("TransactionSource", fields: [sourceAccountId, ownerId, currencyCode], references: [id, ownerId, currencyCode], onDelete: Restrict, onUpdate: Restrict, map: "transactions_source_account_fkey")
+  destination           FinancialAccount?   @relation("TransactionDestination", fields: [destinationAccountId, ownerId, currencyCode], references: [id, ownerId, currencyCode], onDelete: Restrict, onUpdate: Restrict, map: "transactions_destination_account_fkey")
+  category              Category?           @relation(fields: [categoryId, ownerId], references: [id, ownerId], onDelete: Restrict, onUpdate: Restrict, map: "transactions_category_fkey")
+  journalEntry          JournalEntry        @relation("TransactionEntry", fields: [journalEntryId, ownerId], references: [id, ownerId], onDelete: Restrict, onUpdate: Restrict, map: "transactions_journal_entry_fkey")
+  reversalEntry         JournalEntry?       @relation("TransactionReversal", fields: [reversalEntryId, ownerId], references: [id, ownerId], onDelete: Restrict, onUpdate: Restrict, map: "transactions_reversal_entry_fkey")
+  replaces              FinanceTransaction? @relation("TransactionCorrection", fields: [replacesTransactionId, ownerId], references: [id, ownerId], onDelete: Restrict, onUpdate: Restrict, map: "transactions_replaces_fkey")
+  replacedBy            FinanceTransaction? @relation("TransactionCorrection")
+
+  @@unique([id, ownerId], map: "transactions_id_owner_key")
+  @@unique([journalEntryId, ownerId], map: "transactions_journal_entry_key")
+  @@unique([reversalEntryId, ownerId], map: "transactions_reversal_entry_key")
+  @@unique([replacesTransactionId, ownerId], map: "transactions_replaces_key")
+  @@index([ownerId, occurredOn], map: "transactions_owner_date_idx")
+  @@index([sourceAccountId, ownerId, currencyCode], map: "transactions_source_idx")
+  @@index([destinationAccountId, ownerId, currencyCode], map: "transactions_destination_idx")
+  @@index([categoryId, ownerId], map: "transactions_category_idx")
+  @@map("transactions")
   @@schema("finora")
 }

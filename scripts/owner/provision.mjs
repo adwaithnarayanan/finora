@@ -1,130 +1,136 @@
 #!/usr/bin/env node
-// Provision Finora's owner: invite the user through Supabase Auth (they verify
-// their email and set a password from the invite link) and map the resulting
-// auth user to a new internal owner.
+// Provision Finora's owner (see scripts/lib/provisioning.mjs, ADR 0003 and
+// docs/runbooks/owner-access.md). Nothing here runs automatically on login.
 //
-//   Local:  npm run owner:provision -- --local --email you@example.com
-//   Hosted: SUPABASE_URL=… SUPABASE_SECRET_KEY=… MIGRATION_DATABASE_URL=… \
-//           NEXT_PUBLIC_SITE_URL=https://… npm run owner:provision -- --email you@example.com
+// Email/password (current sign-in method):
+//   npm run owner:provision -- prepare      --email you@example.com [--local]
+//   npm run owner:provision -- set-password --email you@example.com [--local] [--password-stdin]
+//   npm run owner:provision -- complete     --email you@example.com [--local]
 //
-// Options:
-//   --existing          map an already-registered, email-verified auth user instead of inviting
-//   --allow-additional  permit a second owner (Finora is single-owner by default)
+//   npm run owner:provision -- set-password ...   also rotates; ends all of the user's sessions
+//   npm run owner:provision -- relink --email new@example.com   keep owner id + data, new account
+//   npm run owner:provision -- cancel --email you@example.com   delete a prepared, unmapped user
+//   (prepare --relink / --allow-additional: see the runbook)
 //
-// No secret or connection string is ever printed.
+// The password is typed at a hidden prompt (twice) or piped with
+// --password-stdin. It is never accepted as an argument or environment
+// variable and never printed. Hosted: supply SUPABASE_URL, SUPABASE_SECRET_KEY
+// and MIGRATION_DATABASE_URL in the shell for this one command.
 import { parseArgs } from "node:util";
 
 import { createClient } from "@supabase/supabase-js";
 import pg from "pg";
 
 import { readLocalSupabase } from "../lib/local-supabase.mjs";
-import { linkOwner } from "../lib/owners.mjs";
+import {
+  ProvisioningError,
+  cancel,
+  complete,
+  normaliseEmail,
+  passwordProblem,
+  prepare,
+  relink,
+  setPassword,
+} from "../lib/provisioning.mjs";
+import { promptHidden, readStdinSecret } from "../lib/read-secret.mjs";
 
-const { values } = parseArgs({
+const { values, positionals } = parseArgs({
+  allowPositionals: true,
   options: {
     email: { type: "string" },
     local: { type: "boolean", default: false },
-    existing: { type: "boolean", default: false },
+    relink: { type: "boolean", default: false },
+    "password-stdin": { type: "boolean", default: false },
     "allow-additional": { type: "boolean", default: false },
   },
 });
 
-const email = values.email?.trim().toLowerCase();
-if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-  console.error("Usage: npm run owner:provision -- [--local] [--existing] --email you@example.com");
-  process.exit(1);
+const COMMANDS = ["prepare", "set-password", "complete", "relink", "cancel"];
+const USAGE = `Usage: npm run owner:provision -- <${COMMANDS.join("|")}> --email you@example.com [--local]`;
+
+async function readPassword() {
+  if (values["password-stdin"]) return readStdinSecret();
+  const first = await promptHidden("New password (not shown): ");
+  const problem = passwordProblem(first);
+  if (problem) throw new ProvisioningError(`Password rejected: ${problem}.`);
+  const second = await promptHidden("Repeat the password: ");
+  if (first !== second) throw new ProvisioningError("The passwords did not match; nothing was changed.");
+  return first;
 }
 
 function config() {
   if (values.local) {
     const local = readLocalSupabase();
-    return {
-      supabaseUrl: local.apiUrl,
-      secretKey: local.secretKey,
-      databaseUrl: local.migrationDatabaseUrl.replace(/\?.*$/, ""),
-      siteUrl: "http://localhost:3000",
-    };
+    return { supabaseUrl: local.apiUrl, secretKey: local.secretKey, databaseUrl: local.migrationDatabaseUrl.replace(/\?.*$/, "") };
   }
-  const missing = ["SUPABASE_URL", "SUPABASE_SECRET_KEY", "MIGRATION_DATABASE_URL", "NEXT_PUBLIC_SITE_URL"].filter(
-    (name) => !process.env[name],
-  );
-  if (missing.length > 0) {
-    console.error(`Missing environment variables: ${missing.join(", ")}`);
-    process.exit(1);
-  }
+  const missing = ["SUPABASE_URL", "SUPABASE_SECRET_KEY", "MIGRATION_DATABASE_URL"].filter((name) => !process.env[name]);
+  if (missing.length > 0) throw new ProvisioningError(`Missing environment variables: ${missing.join(", ")}`);
   return {
     supabaseUrl: process.env.SUPABASE_URL,
     secretKey: process.env.SUPABASE_SECRET_KEY,
     databaseUrl: process.env.MIGRATION_DATABASE_URL,
-    siteUrl: process.env.NEXT_PUBLIC_SITE_URL,
   };
 }
 
-async function findUserByEmail(admin, address) {
-  for (let page = 1; page <= 50; page += 1) {
-    const { data, error } = await admin.listUsers({ page, perPage: 200 });
-    if (error) throw new Error(`Could not list users (${error.code ?? error.status})`);
-    const match = data.users.find((user) => user.email?.toLowerCase() === address);
-    if (match) return match;
-    if (data.users.length < 200) return null;
-  }
-  return null;
-}
-
 async function main() {
+  const [command] = positionals;
+  if (!COMMANDS.includes(command)) throw new ProvisioningError(USAGE);
+  const email = normaliseEmail(values.email);
+  const allowAdditional = values["allow-additional"];
+
   const cfg = config();
   const admin = createClient(cfg.supabaseUrl, cfg.secretKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   }).auth.admin;
-
-  const client = new pg.Client({ connectionString: cfg.databaseUrl });
-  await client.connect();
+  const db = new pg.Client({ connectionString: cfg.databaseUrl });
+  await db.connect();
   try {
-    // Check the single-owner rule before touching Supabase Auth, so a refused
-    // run never leaves an invited-but-unmapped user behind. linkOwner()
-    // re-checks under a lock.
-    if (!values["allow-additional"]) {
-      const { rows } = await client.query("SELECT count(*)::int AS n FROM finora.owners");
-      if (rows[0].n > 0) {
-        throw new Error("An owner already exists. Pass --allow-additional to add another deliberately.");
+    switch (command) {
+      case "prepare": {
+        const purpose = values.relink ? "relink" : allowAdditional ? "additional-owner" : "new-owner";
+        const { created } = await prepare({ admin, db, email, purpose });
+        console.log(created ? "Prepared a passwordless user for that email." : "A user with that email already exists (unmapped).");
+        const flag = values.local ? " --local" : "";
+        console.log(`Next: npm run owner:provision -- set-password --email ${email}${flag}`);
+        console.log(`then: npm run owner:provision -- ${values.relink ? "relink" : "complete"} --email ${email}${flag}`);
+        break;
+      }
+      case "set-password": {
+        const password = await readPassword();
+        const { remainingSessions } = await setPassword({ admin, db, email, password });
+        console.log("Password set. All existing sessions for that user have ended.");
+        if (remainingSessions > 0) console.log(`Warning: ${remainingSessions} session(s) could not be removed.`);
+        break;
+      }
+      case "complete": {
+        const { ownerId, created, approved } = await complete({ admin, db, email, allowAdditional });
+        console.log(`Approved ${approved}.`);
+        console.log(created ? `Owner created: ${ownerId}` : `Already provisioned: ${ownerId}`);
+        console.log("The owner can now sign in.");
+        break;
+      }
+      case "relink": {
+        const { ownerId, previousApprovalCleared, approved } = await relink({ admin, db, email });
+        console.log(`Owner ${ownerId} now uses ${approved}; its data is unchanged.`);
+        console.log("The previous user no longer has access.");
+        if (!previousApprovalCleared) console.log("Warning: could not clear the previous user's approval; it is unmapped, so it still has no access. Delete it in the Supabase dashboard.");
+        break;
+      }
+      case "cancel": {
+        await cancel({ admin, db, email });
+        console.log("Deleted the prepared user.");
+        break;
       }
     }
-
-    let userId;
-    let invited = false;
-    if (values.existing) {
-      const user = await findUserByEmail(admin, email);
-      if (!user) throw new Error("No auth user with that email.");
-      if (!user.email_confirmed_at) throw new Error("That user has not verified their email yet.");
-      userId = user.id;
-    } else {
-      const { data, error } = await admin.inviteUserByEmail(email, {
-        redirectTo: new URL("/auth/confirm", cfg.siteUrl).toString(),
-      });
-      if (error) throw new Error(`Invite failed (${error.code ?? error.status}). Use --existing for registered users.`);
-      userId = data.user.id;
-      invited = true;
-    }
-
-    try {
-      const { ownerId, created } = await linkOwner(client, {
-        subject: userId,
-        allowAdditional: values["allow-additional"],
-      });
-      console.log(created ? `Owner created: ${ownerId}` : `Already provisioned: ${ownerId}`);
-      if (invited) console.log("Invite sent. The owner verifies their email and sets a password from the link.");
-    } catch (error) {
-      if (invited) await admin.deleteUser(userId); // undo the invite we just created
-      throw error;
-    }
   } finally {
-    await client.end();
+    await db.end();
   }
 }
 
 try {
   await main();
 } catch (error) {
-  console.error(`Provisioning failed: ${error instanceof Error ? error.message : "unknown error"}`);
+  const message = error instanceof ProvisioningError || error instanceof Error ? error.message : "unknown error";
+  console.error(`Provisioning failed: ${message}`);
   process.exit(1);
 }

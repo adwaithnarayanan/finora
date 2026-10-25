@@ -1,7 +1,7 @@
 import { type Page, expect, test } from "@playwright/test";
 
-import { confirmLink, countEmails, latestEmailHtml } from "./support/mailpit";
 import { e2eUsers } from "./support/fixtures";
+import { signInAs } from "./support/session";
 
 const users = e2eUsers();
 
@@ -17,6 +17,11 @@ const formAlert = (page: Page) => page.locator("form").getByRole("alert");
 
 const homeHeading = (page: Page) =>
   page.getByRole("heading", { level: 1, name: /know exactly where your money is/i });
+
+const authCookies = async (page: Page) =>
+  (await page.context().cookies()).filter((c) => /-auth-token(\.\d+)?$/.test(c.name));
+
+const GENERIC = "Invalid email or password.";
 
 test.describe.configure({ mode: "serial" });
 
@@ -36,32 +41,50 @@ test.describe("unauthenticated access", () => {
   });
 });
 
-test.describe("sign-in", () => {
-  test("wrong password and unknown email get the same generic error", async ({ page }) => {
-    await signIn(page, users.owner.email, "Wrong-password-123");
-    await expect(formAlert(page)).toHaveText("Invalid email or password.");
-    await signIn(page, "nobody@finora.test", "Wrong-password-123");
-    await expect(formAlert(page)).toHaveText("Invalid email or password.");
-    await expect(page).toHaveURL(/\/login/);
+test.describe("sign-in page", () => {
+  test("offers email and password only: no Google, recovery or sign-up controls", async ({ page }) => {
+    await page.goto("/login");
+    await expect(page.getByLabel("Email")).toBeVisible();
+    await expect(page.getByLabel("Password", { exact: true })).toHaveAttribute("type", "password");
+    await expect(page.getByRole("button", { name: /google/i })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: /forgot|reset|sign up|register/i })).toHaveCount(0);
+  });
+});
+
+test.describe("password sign-in", () => {
+  test("wrong password, unknown email and unverified email get the same generic error", async ({ page }) => {
+    for (const [email, password] of [
+      [users.owner.email, "Wrong-password-123"],
+      ["nobody@finora.test", "Wrong-password-123"],
+      [users.unverified.email, users.unverified.password],
+      ["not-an-email", "x"],
+    ] as const) {
+      await signIn(page, email, password);
+      await expect(formAlert(page), email).toHaveText(GENERIC);
+      await expect(page).toHaveURL(/\/login/);
+      expect(await authCookies(page)).toEqual([]);
+    }
   });
 
-  test("a verified user who is not the owner is refused and signed out", async ({ page }) => {
-    await signIn(page, users.stranger.email, users.stranger.password);
-    await expect(page).toHaveURL(/\/unauthorized$/);
-    await expect(page.getByRole("heading", { name: "No access" })).toBeVisible();
-    await page.goto("/");
-    await expect(page).toHaveURL(/\/login$/);
-  });
-
-  test("the owner signs in, sees the app, and signs out", async ({ page }) => {
+  test("the owner signs in, sees the app, and signs out", async ({ page, context }) => {
     await signIn(page, users.owner.email, users.owner.password);
     await expect(page).toHaveURL(/\/$/);
     await expect(homeHeading(page)).toBeVisible();
+
+    const sessionCookies = await authCookies(page);
+    expect(sessionCookies.length).toBeGreaterThan(0);
 
     await page.getByRole("button", { name: "Sign out" }).click();
     await expect(page).toHaveURL(/\/login$/);
     await page.goto("/");
     await expect(page).toHaveURL(/\/login$/);
+
+    // Replaying the old cookies after sign-out does not restore access: the
+    // session was revoked on the Auth server, which is checked on every request.
+    await context.addCookies(sessionCookies);
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(homeHeading(page)).toHaveCount(0);
   });
 
   test("a same-origin next path is honoured", async ({ page }) => {
@@ -79,76 +102,53 @@ test.describe("sign-in", () => {
   }
 });
 
-test.describe("password recovery", () => {
-  test("the response does not reveal whether an address is registered", async ({ page }) => {
-    const unknown = `nobody-${Date.now()}@finora.test`;
-    const messages: string[] = [];
-    for (const email of [users.owner.email, unknown]) {
-      await page.goto("/forgot-password");
-      await page.getByLabel("Email").fill(email);
-      await page.getByRole("button", { name: "Send reset link" }).click();
-      const status = page.getByRole("status");
-      await expect(status).toBeVisible();
-      messages.push((await status.textContent()) ?? "");
+test.describe("authenticated but not authorised", () => {
+  for (const [label, key] of [
+    ["a confirmed user who was never provisioned", "stranger"],
+    ["an approved user with no owner mapping", "unmapped"],
+    ["an inactive (disabled) owner", "inactive"],
+  ] as const) {
+    test(`${label} is refused and signed out`, async ({ page }) => {
+      await signIn(page, users[key].email, users[key].password);
+      await expect(page).toHaveURL(/\/unauthorized$/);
+      await expect(page.getByRole("heading", { name: "No access" })).toBeVisible();
+      expect(await authCookies(page)).toEqual([]);
+      await page.goto("/");
+      await expect(page).toHaveURL(/\/login$/);
+    });
+  }
+});
+
+test.describe("other sign-in methods cannot get in", () => {
+  test("the owner's account is refused with a session that was not a password login", async ({ page, context, baseURL }) => {
+    // Admin magic-link session (needs the secret key) and a simulated Google
+    // OAuth session: both are real Auth sessions for the provisioned owner.
+    for (const method of ["otp", "oauth"] as const) {
+      await context.clearCookies();
+      await signInAs(context, baseURL!, users.owner.email, method);
+      await page.goto("/");
+      await expect(page, method).toHaveURL(/\/login$/);
+      await expect(homeHeading(page)).toHaveCount(0);
     }
-    expect(messages[0]).toBe(messages[1]);
-    expect(await countEmails(unknown)).toBe(0);
   });
 
-  test("the owner resets the password through the emailed link", async ({ page, baseURL }) => {
-    const requestedAt = new Date(Date.now() - 1000);
-    await page.goto("/forgot-password");
-    await page.getByLabel("Email").fill(users.owner.email);
-    await page.getByRole("button", { name: "Send reset link" }).click();
-    await expect(page.getByRole("status")).toBeVisible();
+  test("the deferred OAuth callback does nothing (404) and sets no session", async ({ page, context }) => {
+    await context.clearCookies();
+    for (const query of ["?code=00000000-0000-4000-8000-000000000000", "?error=access_denied&error_code=signup_disabled", ""]) {
+      const response = await page.goto(`/auth/callback${query}`);
+      expect(response?.status(), query || "no query").toBe(404);
+    }
+    expect(await authCookies(page)).toEqual([]);
+  });
 
-    const link = confirmLink(await latestEmailHtml(users.owner.email, requestedAt), baseURL!);
-
-    // Opening the link (as a mail scanner would) must not spend the token.
-    await page.goto(link);
-    await page.goto(link);
-    await page.getByRole("button", { name: "Continue" }).click();
-    await expect(page).toHaveURL(/\/reset-password$/);
-
-    await page.getByLabel("New password", { exact: true }).fill("short");
-    await page.getByLabel("Confirm new password").fill("short");
-    await page.getByRole("button", { name: "Save password" }).click();
-    await expect(formAlert(page)).toContainText("at least 12");
-
-    const newPassword = `Reset-${Date.now()}-Aa1`;
-    await page.getByLabel("New password", { exact: true }).fill(newPassword);
-    await page.getByLabel("Confirm new password").fill(newPassword);
-    await page.getByRole("button", { name: "Save password" }).click();
-    await expect(page).toHaveURL(/\/$/);
-    await expect(homeHeading(page)).toBeVisible();
-    await page.getByRole("button", { name: "Sign out" }).click();
-
-    // The link is single-use.
-    await page.goto(link);
-    await page.getByRole("button", { name: "Continue" }).click();
-    await expect(page).toHaveURL(/\/login\?error=link$/);
-    await expect(formAlert(page)).toContainText("invalid or has expired");
-
-    // Old password no longer works; the new one does.
+  test("removed recovery and email-link routes are gone", async ({ page }) => {
     await signIn(page, users.owner.email, users.owner.password);
-    await expect(formAlert(page)).toHaveText("Invalid email or password.");
-    await signIn(page, users.owner.email, newPassword);
     await expect(homeHeading(page)).toBeVisible();
+    for (const path of ["/forgot-password", "/reset-password", "/auth/confirm?token_hash=x&type=recovery"]) {
+      const response = await page.goto(path);
+      expect(response?.status(), path).toBe(404);
+    }
+    await page.goto("/");
     await page.getByRole("button", { name: "Sign out" }).click();
-  });
-
-  test("the reset form refuses visitors without a recovery session", async ({ page }) => {
-    await page.goto("/reset-password");
-    const password = `Nope-${Date.now()}-Aa1`;
-    await page.getByLabel("New password", { exact: true }).fill(password);
-    await page.getByLabel("Confirm new password").fill(password);
-    await page.getByRole("button", { name: "Save password" }).click();
-    await expect(page).toHaveURL(/\/forgot-password$/);
-  });
-
-  test("a tampered link is rejected", async ({ page }) => {
-    await page.goto("/auth/confirm?token_hash=forged&type=recovery&next=/reset-password");
-    await page.getByRole("button", { name: "Continue" }).click();
-    await expect(page).toHaveURL(/\/login\?error=link$/);
   });
 });

@@ -76,6 +76,7 @@ const prismaInternals = {
     "@/server/db/scope",
     "@/server/db/owner-directory",
     "@/server/db/ledger-store",
+    "@/server/db/finance-store",
     "@/server/db/generated",
     "@/server/db/generated/**",
     "**/db/generated",

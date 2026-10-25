@@ -40,8 +40,8 @@ export function HomeOverview() {
         </h1>
         <p className="mt-5 text-base leading-relaxed text-pretty text-muted-foreground sm:text-lg">
           Finora brings your accounts, cards, loans, deposits and budgets into
-          one exact, private ledger. The foundations are being laid; the
-          features follow.
+          one exact, private ledger. Bank and cash accounts, income, expenses
+          and transfers are ready; the rest follows.
         </p>
       </section>
 

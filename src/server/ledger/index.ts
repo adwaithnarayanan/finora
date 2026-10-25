@@ -20,7 +20,8 @@ export type {
 
 /**
  * The ledger API for server code. Callers pass the `AuthorizedOwner` from
- * `requireOwner()`; there is deliberately no route, server action or other
- * client-reachable entry point in this milestone.
+ * `requireOwner()`. No route or server action exposes it directly: user-facing
+ * features post through the finance service's server-side templates
+ * (src/server/finance), so clients never submit journal lines.
  */
 export const ledger = createLedgerService(withLedgerStore);
