@@ -56,6 +56,20 @@ async function addDefaultCategories(page: Page) {
 
 const balanceOn = (page: Page) => page.getByText("Posted balance").locator("xpath=following-sibling::p[1]");
 
+/**
+ * The transaction form on screen, identified by its "Type" radio group (the
+ * app's only other fieldset is "Opening balance (optional)").
+ *
+ * Needed because `cacheComponents` keeps up to three visited routes mounted
+ * but hidden (React Activity, see the Next.js "Preserving UI state" guide), so
+ * after a client-side navigation a document-wide field locator can also match
+ * a hidden form of a route that was navigated away from. `/accounts/new`
+ * labels its opening-amount field "Amount" for a non-card account, the same
+ * label this form uses, and `for=`/`id` resolution picks the first match.
+ */
+const transactionForm = (page: Page) =>
+  page.locator("form").filter({ visible: true }).filter({ has: page.getByRole("group", { name: "Type" }) });
+
 async function openAccount(page: Page, name: string) {
   await page.goto("/accounts?archived=1"); // include archived accounts
   await page.getByRole("link", { name: new RegExp(`^${name}`) }).click();
@@ -372,21 +386,25 @@ test.describe("accounts and transactions (owner)", () => {
     const paidFrom = page.getByLabel("Paid from", { exact: true });
     await expect(paidFrom.locator("option:checked")).toHaveText("HDFC Card (Owed ₹12,000.00)");
     await expect(page.getByText("Paid by credit card: adds to the amount owed on the card.")).toBeVisible();
+    // The form reached by a link click, not a fresh load: scope its fields to it.
+    const form = transactionForm(page);
+    const amount = form.getByLabel("Amount", { exact: true });
+    await expect(amount).toHaveCount(1);
     await page.getByLabel("Category", { exact: true }).selectOption({ label: "Shopping" });
-    await page.getByLabel("Amount", { exact: true }).fill("1250.005");
+    await amount.fill("1250.005");
     await page.getByLabel("Date", { exact: true }).fill("2026-10-24");
     await page.getByLabel("Paid to (optional)").fill("Bata");
 
     // A refused amount keeps every entered value, the card and category included.
     await page.getByRole("button", { name: "Record expense" }).click();
     await expect(page.getByText("Use at most 2 decimal places for INR")).toBeVisible();
-    await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("1250.005");
+    await expect(amount).toHaveValue("1250.005");
     await expect(page.getByLabel(/^Expense/)).toBeChecked();
     await expect(paidFrom.locator("option:checked")).toHaveText("HDFC Card (Owed ₹12,000.00)");
     await expect(page.getByLabel("Category", { exact: true }).locator("option:checked")).toHaveText("Shopping");
     await expect(page.getByLabel("Paid to (optional)")).toHaveValue("Bata");
 
-    await page.getByLabel("Amount", { exact: true }).fill("1250");
+    await amount.fill("1250");
     await page.getByRole("button", { name: "Record expense" }).click();
     await expect(page).toHaveURL(/\/transactions\?recorded=/);
 
