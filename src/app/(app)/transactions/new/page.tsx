@@ -18,7 +18,10 @@ export const metadata: Metadata = { title: "Record transaction" };
 export default function NewTransactionPage({ searchParams }: PageProps<"/transactions/new">) {
   return (
     <div className="max-w-2xl">
-      <PageHeader title="Record transaction" description="Income, an expense, or a transfer between your accounts." />
+      <PageHeader
+        title="Record transaction"
+        description="Income, an expense (from an account or on a credit card), or a transfer between your accounts."
+      />
       <Suspense fallback={<PageLoading />}>
         <NewTransaction searchParams={searchParams} />
       </Suspense>
@@ -35,10 +38,10 @@ async function NewTransaction({ searchParams }: Pick<PageProps<"/transactions/ne
   if (options.length === 0) {
     return (
       <div className="rounded-lg border border-dashed p-8 text-center">
-        <p className="font-medium">You need a bank or cash account first</p>
+        <p className="font-medium">You need an account first</p>
         <p className="mt-1 text-sm text-muted-foreground">
-          Transactions move money into, out of, or between your bank and cash accounts. Credit cards cannot take
-          transactions yet.
+          Transactions move money into, out of, or between your bank and cash accounts, or record spending on a credit
+          card.
         </p>
         <Link href="/accounts/new" className={buttonVariants({ className: "mt-4" })}>
           Create an account
@@ -58,6 +61,9 @@ async function NewTransaction({ searchParams }: Pick<PageProps<"/transactions/ne
         : usable("income")
           ? "income"
           : "transfer";
+  // ?account= (from an account's page) preselects the paying account when the
+  // form can use it: any account for an expense, bank or cash for a transfer.
+  const preselected = options.find((o) => o.id === params.account && (type === "expense" || (type === "transfer" && !o.card)));
   return (
     <div className="grid gap-6">
       {categories.length === 0 ? (
@@ -92,6 +98,7 @@ async function NewTransaction({ searchParams }: Pick<PageProps<"/transactions/ne
         idempotencyKey={randomUUID()}
         today={todayInIndia()}
         initialKind={type}
+        {...(preselected ? { initialSourceAccountId: preselected.id } : {})}
         accounts={options}
         incomeCategories={active.filter((c) => c.kind === "income").map((c) => ({ id: c.id, label: c.name }))}
         expenseCategories={active.filter((c) => c.kind === "expense").map((c) => ({ id: c.id, label: c.name }))}

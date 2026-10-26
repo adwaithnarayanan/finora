@@ -164,18 +164,49 @@ describe("posting templates", () => {
     expect(issuesOf(fn)).toEqual(fields);
   });
 
+  it("expense paid by card: Dr expense category, Cr the card's liability account (amount owed grows)", () => {
+    const purchase = parseTransactionIntent({ kind: "expense", amount: "1250", date, sourceAccountId: id(1), categoryId: id(201), payee: "Store", note: "Shoes" });
+    const plan = planTransaction(purchase, { source: card(1), category: category("expense"), categoryLedgerAccountId: id(301) });
+    expect(plan).toMatchObject({ kind: "expense", description: "Expense to Store", date });
+    expect(plan.amount.minor).toBe(125000n);
+    expect(plan.lines).toEqual([
+      { accountId: id(301), side: "debit", amount: "1250.00", currency: "INR", memo: "Shoes" },
+      { accountId: id(101), side: "credit", amount: "1250.00", currency: "INR", memo: null },
+    ]);
+  });
+
+  it("checks a card expense's precision against the card's currency", () => {
+    const kwd = card(1, { currency: KNOWN_CURRENCIES.KWD });
+    const precise = parseTransactionIntent({ kind: "expense", amount: "1.234", date, sourceAccountId: id(1), categoryId: id(201) });
+    expect(planTransaction(precise, { source: kwd, category: category("expense"), categoryLedgerAccountId: id(301) }).lines[1]).toMatchObject({
+      amount: "1.234",
+      currency: "KWD",
+    });
+    const tooPrecise = parseTransactionIntent({ kind: "expense", amount: "1.001", date, sourceAccountId: id(1), categoryId: id(201) });
+    expect(issuesOf(() => planTransaction(tooPrecise, { source: card(1), category: category("expense"), categoryLedgerAccountId: id(301) }))).toEqual(["amount"]);
+  });
+
+  it.each([
+    ["an archived card", () => planTransaction(expense, { source: card(1, { archived: true }), category: category("expense"), categoryLedgerAccountId: id(301) }), ["sourceAccountId"]],
+    ["an archived category", () => planTransaction(expense, { source: card(1), category: category("expense", { archived: true }), categoryLedgerAccountId: id(301) }), ["categoryId"]],
+    ["an income category", () => planTransaction(expense, { source: card(1), category: category("income"), categoryLedgerAccountId: id(300) }), ["categoryId"]],
+    ["a category without a ledger account in the card's currency", () => planTransaction(expense, { source: card(1), category: category("expense") }), ["categoryId"]],
+  ])("refuses a card expense with %s", (_label, fn, fields) => {
+    expect(issuesOf(fn)).toEqual(fields);
+  });
+
   it.each([
     ["income into a card", () => planTransaction(income, { destination: card(1), category: category("income"), categoryLedgerAccountId: id(300) }), "destinationAccountId"],
-    ["an expense paid by card (not yet)", () => planTransaction(expense, { source: card(1), category: category("expense"), categoryLedgerAccountId: id(301) }), "sourceAccountId"],
     ["a transfer from a card", () => planTransaction(transfer, { source: card(1), destination: account(2) }), "sourceAccountId"],
-    ["a transfer to a card", () => planTransaction(transfer, { source: account(1), destination: card(2) }), "destinationAccountId"],
-  ])("refuses %s: credit cards take only an opening balance in this release", (_label, fn, field) => {
+    ["a transfer to a card (a card payment)", () => planTransaction(transfer, { source: account(1), destination: card(2) }), "destinationAccountId"],
+    ["a transfer between cards", () => planTransaction(transfer, { source: card(1), destination: card(2) }), "destinationAccountId"],
+  ])("refuses %s: a credit card can only pay an expense in this release", (_label, fn, field) => {
     try {
       fn();
       throw new Error("expected FinanceValidationError");
     } catch (error) {
       if (!(error instanceof FinanceValidationError)) throw error;
-      expect(error.issues).toEqual([{ field, message: expect.stringMatching(/is a credit card; card transactions are not supported yet/) }]);
+      expect(error.issues).toEqual([{ field, message: expect.stringMatching(/is a credit card; a card can only pay for an expense/) }]);
     }
   });
 

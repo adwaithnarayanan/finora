@@ -278,7 +278,7 @@ test.describe("accounts and transactions (owner)", () => {
     await expect(page.getByRole("link", { name: /Typo account/ })).toHaveCount(0);
   });
 
-  test("create a credit card with the amount owed; its type is fixed and it takes no transactions yet", async ({ page }) => {
+  test("create a credit card with the amount owed; its type is fixed", async ({ page }) => {
     await page.goto("/accounts/new");
     await page.getByLabel("Account name").fill("HDFC Card");
     await page.getByLabel("Type").selectOption("credit_card");
@@ -292,8 +292,8 @@ test.describe("accounts and transactions (owner)", () => {
     await expect(page.getByText("Credit card · INR")).toBeVisible();
     await expect(balanceOn(page)).toHaveText("Owed ₹12,000.00");
     await expect(page.getByText("Owed ₹12,000.00 as of 1 Oct 2026")).toBeVisible();
-    await expect(page.getByText(/Card purchases and payments cannot be recorded yet/)).toBeVisible();
-    await expect(page.getByRole("link", { name: "Record transaction" })).toHaveCount(0);
+    await expect(page.getByText(/Card payments and refunds cannot be recorded yet/)).toBeVisible();
+    await expect(page.getByRole("link", { name: "Record card expense" })).toBeVisible();
     await expect(page.getByRole("list", { name: "Transactions" })).toContainText("−₹12,000.00"); // owed: money out
 
     // The type cannot be changed; the name can.
@@ -315,9 +315,11 @@ test.describe("accounts and transactions (owner)", () => {
     await expect(listed).toContainText("Credit card · INR");
     await expect(listed).toContainText("Owed ₹11,500.00");
 
-    // A card alone cannot take a transaction.
-    await page.goto("/transactions/new");
-    await expect(page.getByText("You need a bank or cash account first")).toBeVisible();
+    // A card is offered only as the paying account of an expense.
+    await page.goto("/transactions/new?type=income");
+    await expect(page.getByLabel("Received into", { exact: true }).locator("option", { hasText: "HDFC Regalia" })).toHaveCount(0);
+    await page.getByLabel(/^Expense/).check();
+    await expect(page.getByLabel("Paid from", { exact: true }).locator("option", { hasText: "HDFC Regalia (Owed ₹11,500.00)" })).toHaveCount(1);
   });
 
   test("a card with nothing owed, a refused negative amount, and bank accounts kept out of the card type", async ({ page }) => {
@@ -347,9 +349,62 @@ test.describe("accounts and transactions (owner)", () => {
     await expect(page.getByText("Saved.")).toBeVisible();
     await expect(balanceOn(page)).toHaveText("₹50,000.00");
 
-    // Transaction pickers list bank and cash accounts only.
+    // Transfer pickers list bank and cash accounts only.
     await page.goto("/transactions/new?type=transfer");
     await expect(page.getByLabel("From account", { exact: true }).locator("option", { hasText: "Amex" })).toHaveCount(0);
+    await expect(page.getByLabel("To account", { exact: true }).locator("option", { hasText: "Amex" })).toHaveCount(0);
+  });
+
+  test("record an expense paid by card: the amount owed grows and the card's history shows it", async ({ page }) => {
+    await addDefaultCategories(page);
+    await createAccount(page, "Axis Savings", { opening: "50000", asOf: "2026-10-01" });
+    await page.goto("/accounts/new");
+    await page.getByLabel("Account name").fill("HDFC Card");
+    await page.getByLabel("Type").selectOption("credit_card");
+    await page.getByLabel("Amount owed today").fill("12000");
+    await page.getByLabel("As of").fill("2026-10-01");
+    await page.getByRole("button", { name: "Create account" }).click();
+    await expect(balanceOn(page)).toHaveText("Owed ₹12,000.00");
+
+    // From the card's page, the card is preselected as the paying account.
+    await page.getByRole("link", { name: "Record card expense" }).click();
+    await expect(page).toHaveURL(/\/transactions\/new\?type=expense&account=/);
+    const paidFrom = page.getByLabel("Paid from", { exact: true });
+    await expect(paidFrom.locator("option:checked")).toHaveText("HDFC Card (Owed ₹12,000.00)");
+    await expect(page.getByText("Paid by credit card: adds to the amount owed on the card.")).toBeVisible();
+    await page.getByLabel("Category", { exact: true }).selectOption({ label: "Shopping" });
+    await page.getByLabel("Amount", { exact: true }).fill("1250.005");
+    await page.getByLabel("Date", { exact: true }).fill("2026-10-24");
+    await page.getByLabel("Paid to (optional)").fill("Bata");
+
+    // A refused amount keeps every entered value, the card and category included.
+    await page.getByRole("button", { name: "Record expense" }).click();
+    await expect(page.getByText("Use at most 2 decimal places for INR")).toBeVisible();
+    await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("1250.005");
+    await expect(page.getByLabel(/^Expense/)).toBeChecked();
+    await expect(paidFrom.locator("option:checked")).toHaveText("HDFC Card (Owed ₹12,000.00)");
+    await expect(page.getByLabel("Category", { exact: true }).locator("option:checked")).toHaveText("Shopping");
+    await expect(page.getByLabel("Paid to (optional)")).toHaveValue("Bata");
+
+    await page.getByLabel("Amount", { exact: true }).fill("1250");
+    await page.getByRole("button", { name: "Record expense" }).click();
+    await expect(page).toHaveURL(/\/transactions\?recorded=/);
+
+    await openAccount(page, "HDFC Card");
+    await expect(balanceOn(page)).toHaveText("Owed ₹13,250.00");
+    const history = page.getByRole("list", { name: "Transactions" });
+    await expect(history.getByRole("listitem")).toHaveCount(2);
+    const purchase = history.getByRole("listitem").filter({ hasText: "Shopping" });
+    await expect(purchase).toContainText("24 Oct 2026");
+    await expect(purchase).toContainText("HDFC Card");
+    await expect(purchase).toContainText("Bata");
+    await expect(purchase).toContainText("−₹1,250.00");
+
+    // The bank account is untouched, and the card's purchase is in the full history too.
+    await openAccount(page, "Axis Savings");
+    await expect(balanceOn(page)).toHaveText("₹50,000.00");
+    await page.goto("/transactions");
+    await expect(page.getByRole("list", { name: "Transactions" }).getByRole("listitem").filter({ hasText: "Bata" })).toContainText("HDFC Card");
   });
 
   test("correct the opening balance: original reversed, replacement recorded", async ({ page }) => {

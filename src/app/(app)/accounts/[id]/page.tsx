@@ -75,15 +75,18 @@ async function AccountDetail({ params }: Pick<PageProps<"/accounts/[id]">, "para
         <p role="status" className="rounded-lg border bg-muted/40 p-3 text-sm">
           This account is archived. Its history and balance are kept, but it cannot take new transactions until restored.
         </p>
-      ) : card ? (
-        <p role="status" className="rounded-lg border bg-muted/40 p-3 text-sm">
-          Card purchases and payments cannot be recorded yet. This card&apos;s balance is its opening amount owed.
-        </p>
       ) : (
-        <div className="flex flex-wrap gap-2">
-          <Link href={`/transactions/new?type=expense&account=${view.id}`} className={buttonVariants({ size: "sm" })}>
-            Record transaction
-          </Link>
+        <div className="grid gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Link href={`/transactions/new?type=expense&account=${view.id}`} className={buttonVariants({ size: "sm" })}>
+              {card ? "Record card expense" : "Record transaction"}
+            </Link>
+          </div>
+          {card ? (
+            <p className="text-sm text-muted-foreground">
+              Expenses paid with this card add to the amount owed. Card payments and refunds cannot be recorded yet.
+            </p>
+          ) : null}
         </div>
       )}
 

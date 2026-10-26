@@ -144,11 +144,17 @@ export function parseAmountFor(issues: IssueCollector, field: string, amount: st
 }
 
 /**
- * The account exists, is not archived, and can take an ordinary transaction:
- * income, expenses and transfers use asset (bank or cash) accounts only in
- * this release; credit cards take only an opening balance (ADR 0008).
+ * The account exists, is not archived, and can take this side of an ordinary
+ * transaction. Bank and cash accounts take any; a credit card can only pay an
+ * expense (`cardAllowed`): card payments, refunds, card income and transfers
+ * are not supported yet (ADR 0008).
  */
-function requireUsable(issues: IssueCollector, field: string, account: AccountRef | undefined): account is AccountRef {
+function requireUsable(
+  issues: IssueCollector,
+  field: string,
+  account: AccountRef | undefined,
+  cardAllowed = false,
+): account is AccountRef {
   if (!account) {
     issues.add(field, "That account does not exist");
     return false;
@@ -157,8 +163,11 @@ function requireUsable(issues: IssueCollector, field: string, account: AccountRe
     issues.add(field, `${account.name} is archived; restore it to record new transactions`);
     return false;
   }
-  if (account.ledgerKind !== "asset") {
-    issues.add(field, `${account.name} is a credit card; card transactions are not supported yet`);
+  if (account.ledgerKind !== "asset" && !cardAllowed) {
+    issues.add(
+      field,
+      `${account.name} is a credit card; a card can only pay for an expense (card payments, refunds and transfers are not supported yet)`,
+    );
     return false;
   }
   return true;
@@ -177,17 +186,19 @@ const withPayee = (label: string, joiner: string, payee: string | null) => (paye
 /**
  * The posting template for each transaction kind. Clients never supply lines:
  *   income    Dr destination asset    Cr category (income)
- *   expense   Dr category (expense)   Cr source asset
+ *   expense   Dr category (expense)   Cr source (asset, or credit-card liability)
  *   transfer  Dr destination asset    Cr source asset
+ * For a card, the credit increases the amount owed (a liability's normal
+ * balance), as spending from a bank account decreases what is held.
  * The note travels as the first line's memo, so it is part of the ledger's
  * idempotency fingerprint and audit trail.
  */
 export function planTransaction(intent: TransactionIntent, resolved: ResolvedTransaction): PostingPlan {
   const issues = new IssueCollector();
-  const assetField = intent.kind === "expense" ? "sourceAccountId" : "destinationAccountId";
-  const asset = intent.kind === "expense" ? resolved.source : resolved.destination;
-  if (!requireUsable(issues, assetField, asset)) issues.throwIfAny();
-  const amount = parseAmountFor(issues, "amount", intent.amount, asset!);
+  const accountField = intent.kind === "expense" ? "sourceAccountId" : "destinationAccountId";
+  const account = intent.kind === "expense" ? resolved.source : resolved.destination;
+  if (!requireUsable(issues, accountField, account, intent.kind === "expense")) issues.throwIfAny();
+  const amount = parseAmountFor(issues, "amount", intent.amount, account!);
 
   if (intent.kind === "transfer") {
     const { source, destination } = resolved;
@@ -227,7 +238,7 @@ export function planTransaction(intent: TransactionIntent, resolved: ResolvedTra
       amount: amount!,
       date: intent.date,
       description: withPayee("Income", "from", intent.payee),
-      lines: [line(asset!.ledgerAccountId, "debit", amount!, intent.note), line(counter, "credit", amount!, null)],
+      lines: [line(account!.ledgerAccountId, "debit", amount!, intent.note), line(counter, "credit", amount!, null)],
     };
   }
   return {
@@ -235,7 +246,7 @@ export function planTransaction(intent: TransactionIntent, resolved: ResolvedTra
     amount: amount!,
     date: intent.date,
     description: withPayee("Expense", "to", intent.payee),
-    lines: [line(counter, "debit", amount!, intent.note), line(asset!.ledgerAccountId, "credit", amount!, null)],
+    lines: [line(counter, "debit", amount!, intent.note), line(account!.ledgerAccountId, "credit", amount!, null)],
   };
 }
 

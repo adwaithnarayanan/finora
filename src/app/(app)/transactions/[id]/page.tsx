@@ -69,7 +69,7 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
         <dd>{view.dateLabel}</dd>
         {transaction.sourceAccountId ? (
           <>
-            <dt className="text-muted-foreground">From</dt>
+            <dt className="text-muted-foreground">{transaction.kind === "expense" ? "Paid from" : "From"}</dt>
             <dd>{link(transaction.sourceAccountId)}</dd>
           </>
         ) : null}

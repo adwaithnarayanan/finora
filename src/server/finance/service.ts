@@ -539,10 +539,10 @@ export function createFinanceService(run: FinanceRunner) {
         const source = "sourceAccountId" in intent ? await finance.findAccount(intent.sourceAccountId) : null;
         const destination = "destinationAccountId" in intent ? await finance.findAccount(intent.destinationAccountId) : null;
         const category = "categoryId" in intent ? await finance.findCategory(intent.categoryId) : null;
-        const asset = intent.kind === "expense" ? source : destination;
+        const account = intent.kind === "expense" ? source : destination;
         const categoryLedgerAccountId =
-          category && asset && category.kind === intent.kind && category.archivedAt === null
-            ? await categoryLedgerAccount(stores, category, asset.currency.code)
+          category && account && category.kind === intent.kind && category.archivedAt === null
+            ? await categoryLedgerAccount(stores, category, account.currency.code)
             : undefined;
         const plan = planTransaction(intent, {
           ...(source ? { source: toAccountRef(source) } : {}),

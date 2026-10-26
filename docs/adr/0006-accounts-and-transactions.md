@@ -226,8 +226,8 @@ replaces it with an application-defined comparison key stored in
   owner), so N queries per page is acceptable for now; a batched balance query
   can come later without changing the model.
 - **Deferred:**
-  - credit cards (foundation in ADR 0008; purchases, payments and refunds
-    still deferred), loans, investments and deposits (further account
+  - credit cards (foundation and card-paid expenses in ADR 0008; payments
+    and refunds still deferred), loans, investments and deposits (further account
     types, likely liability-normal);
   - FX transfers;
   - editing a transaction through a single correction step (today: void and

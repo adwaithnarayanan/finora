@@ -183,8 +183,10 @@ pre-5A code (4D or earlier) is not a supported rollback path:
   as if every account were an asset.
 
 The 5A database rules still hold under old code: `assert_transaction_valid`
-refuses any income, expense or transfer on a card and any opening balance in
-the wrong direction at COMMIT, so nothing incorrect is posted. Users of old
+refuses card income, any transfer involving a card and any opening balance
+in the wrong direction at COMMIT, so nothing incorrect is posted. (Before
+`20261025000800` it also refuses every card expense; after it, an expense
+on a card is accepted only with the correct Dr category / Cr card lines.) Users of old
 code would see a generic "the ledger refused this change" error instead.
 
 **Operator decision:** after credit-card accounts have been created, fix
@@ -192,6 +194,44 @@ forward (deploy a corrected 5A-or-later application). Do not roll the
 application back to pre-5A code unless there is a reviewed, explicit recovery
 plan. Never delete account history, delete card accounts that have history,
 or change a ledger account's kind to make old code work.
+
+### Card-expense migration (Milestone 5B)
+
+**Status: not run against hosted Supabase.** `20261025000800_card_expenses`
+was tested only on local scratch databases (applied on top of 0700 with
+existing bank, cash and card data); that does not establish hosted
+readiness.
+
+It replaces one function, `finora.assert_transaction_valid`, so that an
+expense may be paid by a credit card (ADR 0008, "Expenses paid by card").
+It writes no row, re-checks no row (the change only relaxes a rule), takes no
+table lock, and changes no table, column, enum value, grant, policy,
+trigger, owner or security attribute.
+
+**Prerequisite and order.** 0600 and 0700 applied (check with
+`npx prisma migrate status`). Then migrate (0800), then deploy the 5B
+application code. No maintenance window is needed for 0800 itself; if 0500
+is still pending, the 0500 window above applies to the whole run. The 5B
+code needs 0800: without it, recording a card expense fails at COMMIT with a
+generic error and writes nothing.
+
+**Failure and recovery.** A failure rolls the whole file back (nothing is
+changed) and Prisma records the migration as failed. After fixing the cause:
+`npx prisma migrate resolve --rolled-back 20261025000800_card_expenses && npm run db:migrate:deploy`.
+
+**Rollback.** Forward-only. Restoring the 0700 function body would be a new,
+reviewed migration, and is only valid while no card expense exists: once one
+exists, every later update of it (void, payee or note edit) re-runs the
+COMMIT-time check, which the 0700 rules would refuse. Prefer fixing forward.
+Never delete or edit posted card expenses to make a rollback pass.
+
+**Local databases that applied 0500 or 0700 before their files were last
+edited** keep the old checksums in `_prisma_migrations` (a development-only
+condition; a fresh or hosted database records the current files). Do not
+edit `_prisma_migrations` by hand to "fix" this. Before applying 0800 to such
+a database, check `npx prisma migrate status` and apply it deliberately; the
+automated test suites run `migrate deploy` against the local database in
+their global setup.
 
 Set the runtime role's login password (generate a long random value; store it
 only in the hosting provider's secret settings):

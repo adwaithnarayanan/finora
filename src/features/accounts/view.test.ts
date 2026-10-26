@@ -49,13 +49,17 @@ describe("account balances for display", () => {
     expect(view).toMatchObject({ typeLabel: "Credit card", ledgerKind: "liability", balance: "Owed ₹12,000.00", negative: false });
   });
 
-  it("offers only active bank and cash accounts to transaction pickers", () => {
+  it("offers active accounts to transaction pickers, marking cards and showing a card's balance as owed", () => {
     const options = toAccountOptions([
       summary(record("bank"), inr("10")),
       summary(record("cash", { id: "id-archived", archivedAt: new Date("2026-10-25T01:00:00Z") }), inr("1")),
       summary(record("credit_card"), inr("12000")),
+      summary(record("credit_card", { id: "id-archived-card", archivedAt: new Date("2026-10-25T01:00:00Z") }), inr("1")),
     ]);
-    expect(options.map((o) => o.id)).toEqual(["id-bank"]);
+    expect(options).toEqual([
+      { id: "id-bank", label: "Axis Savings (₹10.00)", currencyCode: "INR", exponent: 2, card: false },
+      { id: "id-credit_card", label: "HDFC Card (Owed ₹12,000.00)", currencyCode: "INR", exponent: 2, card: true },
+    ]);
   });
 
   it("shows a card's opening amount owed as money out, and an asset's opening balance as money in", () => {
@@ -82,5 +86,38 @@ describe("account balances for display", () => {
     });
     expect(toTransactionView(opening(card.id), lookups, card.id)).toMatchObject({ direction: -1, amount: "₹12,000.00", accounts: "HDFC Card" });
     expect(toTransactionView(opening(bank.id), lookups, bank.id).direction).toBe(1);
+  });
+  it("shows an expense paid by card as money out of the card, with its date, category, payee and note", () => {
+    const card = record("credit_card");
+    const at = new Date("2026-10-25T00:00:00Z");
+    const lookups = lookupsFrom([card], [{ id: "cat-shopping", name: "Shopping", kind: "expense", createdAt: at, updatedAt: at, archivedAt: null }]);
+    const purchase: TransactionRecord = {
+      id: "t-purchase",
+      kind: "expense",
+      occurredOn: parseLedgerDate("2026-10-24"),
+      amount: inr("1250"),
+      sourceAccountId: card.id,
+      destinationAccountId: null,
+      categoryId: "cat-shopping",
+      payee: "Bata",
+      note: "Shoes",
+      journalEntryId: "e",
+      reversalEntryId: null,
+      voidedAt: null,
+      replacesTransactionId: null,
+      replacedByTransactionId: null,
+      createdAt: at,
+      updatedAt: at,
+    };
+    expect(toTransactionView(purchase, lookups, card.id)).toMatchObject({
+      kind: "expense",
+      title: "Shopping",
+      accounts: "HDFC Card",
+      amount: "₹1,250.00",
+      direction: -1,
+      date: "2026-10-24",
+      payee: "Bata",
+      note: "Shoes",
+    });
   });
 });

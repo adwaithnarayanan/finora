@@ -947,21 +947,21 @@ describe("credit cards: liability-backed accounts (ADR 0008)", () => {
     await expect(finance.updateAccount(ownerA, hdfc.id, { name, type: "credit_card" })).rejects.toMatchObject({ reason: "account-name-taken" });
   });
 
-  it("takes no income, expense or transfer yet, writing nothing", async () => {
+  it("takes no income or transfer, writing nothing (a card can only pay an expense)", async () => {
     const hdfc = await card(ownerA, "No-tx card");
+    const other = await card(ownerA, "No-tx card 2");
     const bank = await account(ownerA, "No-tx bank", { openingBalance: { amount: "100", date: today } });
     const salary = await category(ownerA, "Salary", "income");
-    const groceries = await category(ownerA, "Groceries", "expense");
     const before = await counts(seededA.ownerId);
     const attempts: [Record<string, unknown>, string][] = [
       [{ kind: "income", destinationAccountId: hdfc.id, categoryId: salary.id }, "destinationAccountId"],
-      [{ kind: "expense", sourceAccountId: hdfc.id, categoryId: groceries.id }, "sourceAccountId"],
       [{ kind: "transfer", sourceAccountId: bank.id, destinationAccountId: hdfc.id }, "destinationAccountId"],
       [{ kind: "transfer", sourceAccountId: hdfc.id, destinationAccountId: bank.id }, "sourceAccountId"],
+      [{ kind: "transfer", sourceAccountId: hdfc.id, destinationAccountId: other.id }, "destinationAccountId"],
     ];
     for (const [intent, field] of attempts) {
       await expect(finance.recordTransaction(ownerA, { amount: "10", date: today, idempotencyKey: key(), ...intent })).rejects.toMatchObject({
-        issues: [{ field, message: expect.stringMatching(/is a credit card; card transactions are not supported yet/) }],
+        issues: [{ field, message: expect.stringMatching(/is a credit card; a card can only pay for an expense/) }],
       });
     }
     expect(await counts(seededA.ownerId)).toEqual(before);

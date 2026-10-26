@@ -52,23 +52,28 @@ export function toAccountView(summary: AccountSummary): AccountView {
 }
 
 /**
- * Options for transaction account pickers: active bank and cash accounts
- * only (credit cards take no transactions other than an opening balance yet).
+ * Options for transaction account pickers: active accounts. A credit card
+ * (`card`) can only pay an expense; the form offers it nowhere else.
  */
 export interface AccountOption {
   readonly id: string;
   readonly label: string;
   readonly currencyCode: string;
   readonly exponent: number;
+  readonly card: boolean;
 }
 
 export function toAccountOptions(accounts: readonly AccountSummary[]): AccountOption[] {
   return accounts
-    .filter((a) => a.account.archivedAt === null && ACCOUNT_LEDGER_KIND[a.account.type] === "asset")
-    .map(({ account, balance }) => ({
-      id: account.id,
-      label: `${account.name} (${formatMoney(balance)})`,
-      currencyCode: account.currency.code,
-      exponent: account.currency.exponent,
-    }));
+    .filter((a) => a.account.archivedAt === null)
+    .map(({ account, balance }) => {
+      const ledgerKind = ACCOUNT_LEDGER_KIND[account.type];
+      return {
+        id: account.id,
+        label: `${account.name} (${formatAccountBalance(ledgerKind, balance)})`,
+        currencyCode: account.currency.code,
+        exponent: account.currency.exponent,
+        card: ledgerKind === "liability",
+      };
+    });
 }

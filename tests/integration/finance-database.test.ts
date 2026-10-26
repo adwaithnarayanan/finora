@@ -405,36 +405,58 @@ describe("account classes (ADR 0008): type and ledger kind agree", () => {
     ).rejects.toThrow(/finora\.ledger: /);
   });
 
-  it("refuses income, expenses and transfers on a card at COMMIT, even with a matching entry", async () => {
+  it("accepts an expense paid by card at COMMIT only as Dr expense / Cr card, and refuses card income and transfers", async () => {
     const groceries = (await finance.listCategories(ownerA)).find((c) => c.name === "Groceries")!;
-    const { rows } = await admin.query(
-      "SELECT ledger_account_id::text AS id FROM finora.category_ledger_accounts WHERE category_id = $1 AND currency_code = 'INR'",
-      [groceries.id],
-    );
-    const expenseLedger =
-      rows[0]?.id ??
-      (await asOwner(app, a.ownerId, async () => {
-        const id = await newLedger("expense");
-        await app.query("INSERT INTO finora.category_ledger_accounts (owner_id, category_id, currency_code, ledger_account_id) VALUES ($1, $2, 'INR', $3)", [
-          a.ownerId,
-          groceries.id,
-          id,
-        ]);
-        return id;
-      }));
+    const salary = (await finance.listCategories(ownerA)).find((c) => c.name === "Salary")!;
+    const mappedLedger = async (categoryId: string, kind: string) => {
+      const { rows } = await admin.query(
+        "SELECT ledger_account_id::text AS id FROM finora.category_ledger_accounts WHERE category_id = $1 AND currency_code = 'INR'",
+        [categoryId],
+      );
+      return (
+        rows[0]?.id ??
+        (await asOwner(app, a.ownerId, async () => {
+          const id = await newLedger(kind);
+          await app.query("INSERT INTO finora.category_ledger_accounts (owner_id, category_id, currency_code, ledger_account_id) VALUES ($1, $2, 'INR', $3)", [
+            a.ownerId,
+            categoryId,
+            id,
+          ]);
+          return id;
+        }))
+      );
+    };
+    const expenseLedger = await mappedLedger(groceries.id, "expense");
+    const incomeLedger = await mappedLedger(salary.id, "income");
+    const insertCardExpense = (entry: string) =>
+      app.query(
+        `INSERT INTO finora.transactions (owner_id, kind, occurred_on, amount_minor, currency_code, source_account_id, category_id, journal_entry_id)
+         VALUES ($1, 'expense', $2, 125000, 'INR', $3, $4, $5)`,
+        [a.ownerId, today, cardId, groceries.id, entry],
+      );
+
+    await expect(
+      asOwner(app, a.ownerId, async () => insertCardExpense(await postedEntry(cardLedgerId, expenseLedger, 125000))),
+    ).rejects.toThrow(/the journal entry does not match the transaction/);
+    await asOwner(app, a.ownerId, async () => insertCardExpense(await postedEntry(expenseLedger, cardLedgerId, 125000)));
+
+    const unsupported = /a credit card can only pay an expense; income and transfers use bank and cash accounts only/;
     await expect(
       asOwner(app, a.ownerId, async () => {
-        const entry = await postedEntry(expenseLedger, cardLedgerId, 150000);
+        const entry = await postedEntry(cardLedgerId, incomeLedger, 500);
         await app.query(
-          `INSERT INTO finora.transactions (owner_id, kind, occurred_on, amount_minor, currency_code, source_account_id, category_id, journal_entry_id)
-           VALUES ($1, 'expense', $2, 150000, 'INR', $3, $4, $5)`,
-          [a.ownerId, today, cardId, groceries.id, entry],
+          `INSERT INTO finora.transactions (owner_id, kind, occurred_on, amount_minor, currency_code, destination_account_id, category_id, journal_entry_id)
+           VALUES ($1, 'income', $2, 500, 'INR', $3, $4, $5)`,
+          [a.ownerId, today, cardId, salary.id, entry],
         );
       }),
-    ).rejects.toThrow(/income, expenses and transfers use bank and cash accounts only/);
+    ).rejects.toThrow(unsupported);
     await expect(
       asOwner(app, a.ownerId, async () => insertTransfer(await postedEntry(cardLedgerId, bankLedgerId, 500), 500, bankId, cardId)),
-    ).rejects.toThrow(/income, expenses and transfers use bank and cash accounts only/);
+    ).rejects.toThrow(unsupported);
+    await expect(
+      asOwner(app, a.ownerId, async () => insertTransfer(await postedEntry(bankLedgerId, cardLedgerId, 500), 500, cardId, bankId)),
+    ).rejects.toThrow(unsupported);
   });
 
   it("keeps the mapping function private: PUBLIC and the runtime role cannot call it", async () => {
