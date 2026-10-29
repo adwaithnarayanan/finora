@@ -57,7 +57,7 @@ export default function TransactionsPage({ searchParams }: PageProps<"/transacti
     <>
       <PageHeader
         title="Transactions"
-        description="Income, expenses, transfers and opening balances, newest first."
+        description="Income, expenses, transfers, card payments and opening balances, newest first."
         actions={
           <Link href="/transactions/new" className={buttonVariants()}>
             Record transaction

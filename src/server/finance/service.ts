@@ -13,6 +13,7 @@ import {
   type PostingPlan,
   type TransactionIntent,
   accountLifecycle,
+  isTwoSided,
   parseAccountName,
   parseAccountType,
   parseAccountTypeChange,
@@ -222,7 +223,7 @@ function accountFingerprint(input: {
 
 /**
  * The finance application service: financial accounts, categories and
- * income/expense/transfer/opening-balance transactions. Every method takes
+ * income/expense/transfer/card-payment/opening-balance transactions. Every method takes
  * an `AuthorizedOwner` (never an owner id) and runs in ONE owner-scoped
  * transaction; journal entries are created only through ledgerOperations,
  * from server-side posting templates, so clients submit intent, never lines.
@@ -523,10 +524,12 @@ export function createFinanceService(run: FinanceRunner) {
     // --- Transactions -----------------------------------------------------------
 
     /**
-     * Records an income, expense or transfer: validate, resolve references
-     * under the owner, check state and currency, post the entry from the
-     * template, record the transaction, all in one transaction. Retrying with
-     * the same key returns the first result without a second effect.
+     * Records an income, expense, transfer or card payment: validate, resolve
+     * references under the owner, check state and currency, post the entry
+     * from the template, record the transaction, all in one transaction.
+     * Retrying with the same key returns the first result without a second
+     * effect. A card payment debits the card (reducing the amount owed) and
+     * credits the paying bank or cash account; it is not an expense.
      */
     async recordTransaction(
       owner: AuthorizedOwner,
@@ -608,8 +611,8 @@ export function createFinanceService(run: FinanceRunner) {
       issues.throwIfAny();
       return inTransaction(owner, async ({ finance }) => {
         const transaction = await mustFindTransaction(finance, id, true);
-        if (transaction.kind === "transfer" || transaction.kind === "opening_balance") {
-          if (payee !== null) throw fieldError("payee", "Transfers and opening balances have no payee");
+        if (isTwoSided(transaction.kind) || transaction.kind === "opening_balance") {
+          if (payee !== null) throw fieldError("payee", "Transfers, card payments and opening balances have no payee");
         }
         await finance.updateTransactionDetails(transaction.id, { payee, note });
       });

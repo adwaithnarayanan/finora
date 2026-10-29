@@ -8,7 +8,7 @@ import { IssueCollector } from "./errors";
 import { parseNote, parsePayee } from "./text";
 
 /** Ordinary transaction types a user can record. */
-export const TRANSACTION_KINDS = ["income", "expense", "transfer"] as const;
+export const TRANSACTION_KINDS = ["income", "expense", "transfer", "card_payment"] as const;
 export type TransactionKind = (typeof TRANSACTION_KINDS)[number];
 
 /** Every kind a transaction record can have (opening balances are recorded separately). */
@@ -18,8 +18,16 @@ export const RECORD_KIND_LABELS: Record<RecordKind, string> = {
   income: "Income",
   expense: "Expense",
   transfer: "Transfer",
+  card_payment: "Card payment",
   opening_balance: "Opening balance",
 };
+
+/**
+ * Kinds with an account on both sides: money leaves the source and reaches
+ * the destination, so neither is income nor an expense for any period.
+ */
+export const TWO_SIDED_KINDS: readonly RecordKind[] = ["transfer", "card_payment"];
+export const isTwoSided = (kind: RecordKind): boolean => TWO_SIDED_KINDS.includes(kind);
 
 /**
  * What the client may submit: the intent, never journal lines. Ids are
@@ -51,6 +59,15 @@ export type TransactionIntent =
       readonly sourceAccountId: string;
       readonly destinationAccountId: string;
       readonly note: string | null;
+    }
+  | {
+      /** A repayment of a credit card from a bank or cash account (ADR 0008). */
+      readonly kind: "card_payment";
+      readonly amount: string;
+      readonly date: LedgerDate;
+      readonly sourceAccountId: string;
+      readonly destinationAccountId: string;
+      readonly note: string | null;
     };
 
 const AMOUNT_SYNTAX = /^\d{1,19}(\.\d{1,6})?$/;
@@ -73,7 +90,7 @@ export function parseTransactionIntent(raw: Readonly<Record<string, unknown>>): 
   const issues = new IssueCollector();
   const kind = raw["kind"];
   if (!(TRANSACTION_KINDS as readonly unknown[]).includes(kind)) {
-    issues.add("kind", "Choose income, expense or transfer");
+    issues.add("kind", "Choose income, expense, transfer or card payment");
     issues.throwIfAny();
   }
   const amountText = typeof raw["amount"] === "string" ? raw["amount"].trim() : "";
@@ -95,12 +112,25 @@ export function parseTransactionIntent(raw: Readonly<Record<string, unknown>>): 
     const payee = issues.capture("payee", () => parsePayee(raw["payee"])) ?? null;
     intent = { kind, amount: amountText, date: date!, sourceAccountId, categoryId, payee, note };
   } else {
-    const sourceAccountId = requireId(issues, "sourceAccountId", raw["sourceAccountId"], "the account sending the money");
-    const destinationAccountId = requireId(issues, "destinationAccountId", raw["destinationAccountId"], "the account receiving the money");
+    // transfer and card_payment share a shape: two accounts, no category, no payee.
+    const card = kind === "card_payment";
+    const sourceAccountId = requireId(
+      issues,
+      "sourceAccountId",
+      raw["sourceAccountId"],
+      card ? "the account paying the card" : "the account sending the money",
+    );
+    const destinationAccountId = requireId(
+      issues,
+      "destinationAccountId",
+      raw["destinationAccountId"],
+      card ? "the credit card you are paying" : "the account receiving the money",
+    );
     if (sourceAccountId && sourceAccountId === destinationAccountId) {
       issues.add("destinationAccountId", "Choose two different accounts");
     }
-    intent = { kind: "transfer", amount: amountText, date: date!, sourceAccountId, destinationAccountId, note };
+    const sides = { amount: amountText, date: date!, sourceAccountId, destinationAccountId, note };
+    intent = card ? { kind: "card_payment", ...sides } : { kind: "transfer", ...sides };
   }
   issues.throwIfAny();
   return intent;
@@ -144,17 +174,21 @@ export function parseAmountFor(issues: IssueCollector, field: string, amount: st
 }
 
 /**
- * The account exists, is not archived, and can take this side of an ordinary
- * transaction. Bank and cash accounts take any; a credit card can only pay an
- * expense (`cardAllowed`): card payments, refunds, card income and transfers
- * are not supported yet (ADR 0008).
+ * The class an account must have to take one side of a transaction:
+ *   "asset"  a bank or cash account (income, transfers, and the paying side
+ *            of a card payment);
+ *   "card"   a credit card (the paid side of a card payment);
+ *   "any"    either (the source of an expense, which a card may pay).
  */
-function requireUsable(
-  issues: IssueCollector,
-  field: string,
-  account: AccountRef | undefined,
-  cardAllowed = false,
-): account is AccountRef {
+type Expected = "asset" | "card" | "any";
+
+/**
+ * The account exists, is not archived, and can take this side of an ordinary
+ * transaction. A credit card can pay an expense and be paid by a card
+ * payment; refunds, card income and transfers involving a card are still not
+ * supported (ADR 0008).
+ */
+function requireUsable(issues: IssueCollector, field: string, account: AccountRef | undefined, expected: Expected): account is AccountRef {
   if (!account) {
     issues.add(field, "That account does not exist");
     return false;
@@ -163,11 +197,15 @@ function requireUsable(
     issues.add(field, `${account.name} is archived; restore it to record new transactions`);
     return false;
   }
-  if (account.ledgerKind !== "asset" && !cardAllowed) {
+  if (expected === "asset" && account.ledgerKind !== "asset") {
     issues.add(
       field,
-      `${account.name} is a credit card; a card can only pay for an expense (card payments, refunds and transfers are not supported yet)`,
+      `${account.name} is a credit card; a card can only pay for an expense or be paid by a card payment (refunds and transfers involving a card are not supported yet)`,
     );
+    return false;
+  }
+  if (expected === "card" && account.ledgerKind !== "liability") {
+    issues.add(field, `${account.name} is not a credit card; choose the card you are paying`);
     return false;
   }
   return true;
@@ -185,38 +223,49 @@ const withPayee = (label: string, joiner: string, payee: string | null) => (paye
 
 /**
  * The posting template for each transaction kind. Clients never supply lines:
- *   income    Dr destination asset    Cr category (income)
- *   expense   Dr category (expense)   Cr source (asset, or credit-card liability)
- *   transfer  Dr destination asset    Cr source asset
- * For a card, the credit increases the amount owed (a liability's normal
- * balance), as spending from a bank account decreases what is held.
+ *   income        Dr destination asset    Cr category (income)
+ *   expense       Dr category (expense)   Cr source (asset, or credit-card liability)
+ *   transfer      Dr destination asset    Cr source asset
+ *   card_payment  Dr destination card     Cr source asset
+ * For a card expense, the credit increases the amount owed (a liability's
+ * normal balance), as spending from a bank account decreases what is held. A
+ * card payment is the mirror: the debit on the card reduces the amount owed
+ * and the credit reduces what the paying account holds. It debits no expense
+ * category and is neither income nor an expense.
  * The note travels as the first line's memo, so it is part of the ledger's
  * idempotency fingerprint and audit trail.
  */
 export function planTransaction(intent: TransactionIntent, resolved: ResolvedTransaction): PostingPlan {
   const issues = new IssueCollector();
+  // The account whose currency fixes the amount's precision: the one account
+  // an income or expense touches, else the destination (as for a transfer).
   const accountField = intent.kind === "expense" ? "sourceAccountId" : "destinationAccountId";
   const account = intent.kind === "expense" ? resolved.source : resolved.destination;
-  if (!requireUsable(issues, accountField, account, intent.kind === "expense")) issues.throwIfAny();
+  const expected: Expected = intent.kind === "expense" ? "any" : intent.kind === "card_payment" ? "card" : "asset";
+  if (!requireUsable(issues, accountField, account, expected)) issues.throwIfAny();
   const amount = parseAmountFor(issues, "amount", intent.amount, account!);
 
-  if (intent.kind === "transfer") {
+  if (intent.kind === "transfer" || intent.kind === "card_payment") {
+    const card = intent.kind === "card_payment";
     const { source, destination } = resolved;
-    if (requireUsable(issues, "sourceAccountId", source) && destination) {
+    // The paying side is always a bank or cash account, for both kinds.
+    if (requireUsable(issues, "sourceAccountId", source, "asset") && destination) {
       if (source.id === destination.id) issues.add("destinationAccountId", "Choose two different accounts");
       if (!sameCurrency(source.currency, destination.currency)) {
         issues.add(
           "destinationAccountId",
-          `Transfers need accounts in the same currency (${source.currency.code} and ${destination.currency.code}); currency conversion is not supported`,
+          card
+            ? `A card payment needs the card and the paying account in the same currency (${source.currency.code} and ${destination.currency.code}); currency conversion is not supported`
+            : `Transfers need accounts in the same currency (${source.currency.code} and ${destination.currency.code}); currency conversion is not supported`,
         );
       }
     }
     issues.throwIfAny();
     return {
-      kind: "transfer",
+      kind: intent.kind,
       amount: amount!,
       date: intent.date,
-      description: "Transfer",
+      description: card ? "Card payment" : "Transfer",
       lines: [
         line(destination!.ledgerAccountId, "debit", amount!, intent.note),
         line(source!.ledgerAccountId, "credit", amount!, null),

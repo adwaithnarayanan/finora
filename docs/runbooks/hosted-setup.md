@@ -225,13 +225,137 @@ exists, every later update of it (void, payee or note edit) re-runs the
 COMMIT-time check, which the 0700 rules would refuse. Prefer fixing forward.
 Never delete or edit posted card expenses to make a rollback pass.
 
+### Card-payment migrations (Milestone 5C)
+
+**Status: not run against hosted Supabase.** `20261026000000_card_payment_kind`
+and `20261026000100_card_payments` were tested only on local scratch
+databases (applied on top of 0800 with existing bank, cash, card, card-expense
+and voided data); that does not establish hosted readiness.
+
+Together they let a credit card be repaid from a bank or cash account as a
+new transaction kind, `card_payment` (ADR 0008, "Card payments"):
+
+- `20261026000000_card_payment_kind` adds only the enum value
+  `card_payment` to `finora.transaction_kind`. PostgreSQL cannot use a new
+  enum value in the transaction that adds it, which is why it is a file of
+  its own (as 0600 was). Unused, it changes nothing.
+- `20261026000100_card_payments` replaces the row CHECK
+  `transactions_shape` (adding a `card_payment` branch and an `ELSE false`,
+  so an unhandled kind is refused rather than silently accepted) and the
+  function `finora.assert_transaction_valid` (requiring Dr the card / Cr the
+  paying bank or cash account). It writes no row and changes no table,
+  column, grant, policy, trigger, owner or security attribute. Every rule
+  for income, expenses, transfers and opening balances is unchanged — a
+  transfer to or from a card is still refused — so this adds a rule rather
+  than relaxing one.
+
+**Locks: plan a quiet moment.** Unlike 0800, `20261026000100` replaces a row
+CHECK with one `ALTER TABLE` (`DROP CONSTRAINT` plus `ADD CONSTRAINT`), which
+takes **ACCESS EXCLUSIVE** on `finora.transactions`: reads and writes of
+transactions wait until that statement commits, and the `ADD` scans the table
+once to validate. A single owner's history is small, so expect this to be
+brief. No existing row can fail the new CHECK: the five existing branches are
+unchanged and no row has the new kind.
+
+The file sets `lock_timeout = '5s'` and then takes the lock explicitly
+(`LOCK TABLE finora.transactions IN ACCESS EXCLUSIVE MODE`), the same shape
+as 0700, so a contended deploy fails fast instead of queueing every later
+reader and writer of `finora.transactions` behind its lock request. Verified
+on a scratch database with a reader holding `ACCESS SHARE`: the deploy fails
+after ~5s with `ERROR: canceling statement due to lock timeout (55P03)`,
+changing nothing.
+
+**Do not assume a migration file is one transaction.** `prisma migrate
+deploy` (Prisma 7.10.1) does not reliably wrap one, and whether a file gets a
+transaction depends on its statements. Measured directly on scratch
+databases:
+
+- a file containing only `LOCK TABLE` fails with "LOCK TABLE can only be
+  used in transaction blocks" — so there is no enclosing transaction;
+- a file of `CREATE TABLE …; SELECT 1/0;` leaves the table behind — so that
+  file was **not** atomic;
+- the same pair preceded by a `LOCK TABLE` rolls back completely.
+
+An earlier draft of `20261026000100` used `SET LOCAL lock_timeout` and no
+explicit `LOCK TABLE`; in that shape the setting was discarded before the
+`ALTER TABLE` and a contended deploy waited **689 seconds** without giving
+up. Both the explicit lock and the plain (non-`LOCAL`) `SET` in the shipped
+file exist for that reason.
+
+When recovering any migration here, check what actually landed rather than
+assuming a clean rollback. The notes for 0300, 0700 and 0800 above, and
+those files' headers, state or imply whole-file atomicity; 0700 does get a
+transaction (it takes `LOCK TABLE` first), but the general claim does not
+hold for this tool version. Those migrations are already applied and are not
+being edited here.
+
+**Prerequisite and order.** 0800 applied (check with
+`npx prisma migrate status`). Then migrate (both files, normally one
+`npm run db:migrate:deploy` run), then deploy the 5C application code. Code
+already running (4D, 5A or 5B) never records a card payment, so migrating
+ahead of the deploy is safe. The 5C code needs both: without the enum value
+the row cannot be written at all, and with the enum value but not
+`20261026000100` a repayment is refused at COMMIT with a generic error,
+writing nothing. If 0500 is still pending, the 0500 window above applies to
+the whole run.
+
+Read-only check after deploying (expect `card_payment` last, and a
+`transactions_shape` definition that mentions it):
+
+```bash
+psql "${MIGRATION_DATABASE_URL%%\?*}" -X -v ON_ERROR_STOP=1 -c 'BEGIN READ ONLY' \
+  -c "SELECT unnest(enum_range(NULL::finora.transaction_kind))::text AS kind" \
+  -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint
+        WHERE conrelid = 'finora.transactions'::regclass AND conname = 'transactions_shape'" \
+  -c 'ROLLBACK'
+```
+
+**Failure and recovery.** Prisma records the migration as failed
+(`finished_at` null) and nothing of it is applied: because the file takes
+`LOCK TABLE` first it runs as one transaction, verified by injecting a
+failing statement at the end of the real file and confirming that both
+`transactions_shape` and `assert_transaction_valid` were left byte-identical.
+The likely cause of a failure is the lock: find and end the session holding a
+lock on `finora.transactions` (a long-running query or an idle-in-transaction
+session), then recover. Run the read-only check above first to confirm the
+state. Re-running the file from the start is safe (`DROP`/`ADD CONSTRAINT`
+and `CREATE OR REPLACE` are idempotent in effect):
+
+```bash
+npx prisma migrate resolve --rolled-back 20261026000100_card_payments
+npm run db:migrate:deploy
+```
+
+Verified end to end on a scratch database: after a lock-timeout failure,
+resolve plus redeploy completed and left `transactions_shape` present,
+mentioning `card_payment`, and `convalidated`.
+
+Note that `20261026000000_card_payment_kind` is a separate file, so a failure
+of `20261026000100` leaves the **enum value applied**. That is the documented
+intermediate state and needs no repair: nothing writes the kind, and an enum
+value cannot be dropped anyway.
+
+**Rollback.** Forward-only: an enum value cannot be dropped. Restoring
+0800's function body and CHECK would be a new, reviewed migration, valid
+only while no card payment exists — once one exists, the restored CHECK
+(with no `card_payment` branch and an `ELSE false`) would refuse every
+update of it, and so would the restored COMMIT-time check. Prefer fixing
+forward. Never delete or edit posted card payments to make a rollback pass.
+
+Rolling the **application** back from 5C to 5B leaves existing card payments
+in the database, readable and voidable, but 5B code does not know the kind:
+it has no label for it, so history and the type filter would render a
+missing label, and it refuses new repayments. This path has not been tested
+end to end.
+
 **Local databases that applied 0500 or 0700 before their files were last
 edited** keep the old checksums in `_prisma_migrations` (a development-only
 condition; a fresh or hosted database records the current files). Do not
-edit `_prisma_migrations` by hand to "fix" this. Before applying 0800 to such
-a database, check `npx prisma migrate status` and apply it deliberately; the
-automated test suites run `migrate deploy` against the local database in
-their global setup.
+edit `_prisma_migrations` by hand to "fix" this. Before applying 0800 or the
+5C migrations to such a database, check `npx prisma migrate status` and apply
+them deliberately; the automated test suites run `migrate deploy` against the
+local database in their global setup, so on a database with mismatched
+checksums run the suites only after deciding what to do about them.
 
 Set the runtime role's login password (generate a long random value; store it
 only in the hosting provider's secret settings):

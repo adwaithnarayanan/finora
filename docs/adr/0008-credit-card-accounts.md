@@ -11,7 +11,8 @@ lays the foundation only: card accounts, their opening amount owed, and the
 invariants that keep an account's type and its ledger account consistent.
 Purchases, repayments and refunds come in later milestones and are refused
 until then. Milestone 5B (below) adds purchases and other expenses paid by
-card; repayments and refunds are still refused.
+card, and Milestone 5C card payments (repayments); refunds are still
+refused.
 
 Before this change every financial account was an asset, and the
 `financial_accounts_guard` checked the ledger kind only on INSERT, while the
@@ -127,12 +128,11 @@ as money out ("−₹1,250.00"), like a card's opening amount owed.
   non-reversal entry, void and replacement links). Archived accounts and
   categories, other owners' rows and currency mismatches are refused by the
   existing insert guard, RLS and composite foreign keys, unchanged.
-- **Still refused**, by the domain with a field error ("… is a credit card; a
-  card can only pay for an expense …") and by the database at COMMIT ("a
-  credit card can only pay an expense; income and transfers use bank and cash
-  accounts only"): income into a card, a transfer from a card, a transfer to
-  a card (which is what a card payment will be, with its own kind), and a
-  transfer between cards.
+- **Still refused** by 5B, by the domain with a field error ("… is a credit
+  card; a card can only pay for an expense …") and by the database at COMMIT:
+  income into a card, a transfer from a card, a transfer to a card, and a
+  transfer between cards. 5C below adds the card payment as its own kind and
+  keeps every one of those transfer and income refusals.
 - **UI.** The "Paid from" picker of an expense lists active cards with
   their balance as "Owed …" and explains that a card expense adds to the
   amount owed. Income and transfer pickers list bank and cash only; switching
@@ -144,6 +144,86 @@ chargebacks, cashback and other income to a card, cash advances, balance
 transfers and card-to-card transfers, foreign-currency purchases on a card
 of another currency, statements and reconciliation, credit limits and
 available credit, due dates, interest accrual.
+
+### Card payments (Milestone 5C)
+
+A repayment of a card is a **new transaction kind**, `card_payment`: money
+leaves a bank or cash account and reduces what is owed on a card. It is not
+an expense (nothing was bought) and not income.
+
+| Transaction | Debit | Credit | Example |
+| --- | --- | --- | --- |
+| card payment | the card (liability) | the paying account (asset) | ₹5,000 to HDFC Card from Axis: Dr HDFC Card 5,000 / Cr Axis 5,000 |
+
+The debit reduces the card's normal (credit) balance, so the amount owed
+falls; the credit reduces what the paying account holds. **No expense
+category is touched**, and the entry balances in one currency like every
+other.
+
+**Why its own kind, not a transfer to a card.** The lines are the same as a
+transfer's (Dr destination, Cr source), so reusing `transfer` would have been
+a smaller change. It was rejected because it would have *weakened* an
+existing rule: `assert_transaction_valid` would then have to accept a
+transfer whose destination is a liability, and "a transfer to or from a card
+is refused" (5A) would be gone. A separate kind adds a rule instead, leaves
+the transfer rules exactly as strict as they were, lets the database pin the
+repayment template precisely (asset source, `credit_card` destination, no
+category), and gives history and the type filter an honest label. This is
+also the direction 5B recorded ("a transfer to a card … with its own kind").
+
+- **Domain.** `planTransaction` gains the `card_payment` template; the
+  paying side must be an asset (bank or cash) and the side being paid must be
+  a credit card. A card is refused as the payer (so no card pays another) and
+  a bank or cash account is refused as the account being paid. Amount
+  precision follows the card's currency, and both accounts must share it:
+  there is no FX. Archived accounts on either side are refused as for any
+  account. `TWO_SIDED_KINDS` (`transfer`, `card_payment`) is the one place
+  that records which kinds have an account on both sides; the view layer and
+  the payee rule read it instead of naming kinds.
+- **Overpayment is allowed, and uncapped.** Paying more than is owed, or
+  paying a card that owes nothing, leaves the card with a **credit balance in
+  the owner's favour**, which `formatAccountBalance` already renders
+  ("Credit balance ₹500.00"). No new rule was invented for this: balances are
+  derived from posted lines and never stored, a liability's normal balance was
+  always allowed to go negative (5A), and capping a payment at the derived
+  balance would need to serialise against concurrent postings while refusing
+  legitimate cases (paying a statement whose charges are not all entered yet).
+  What stays unsupported is an *opening* credit balance, which needs an
+  explicit "in your favour" choice rather than a sign.
+- **Idempotency** is unchanged: the ledger fingerprint covers the date, the
+  description ("Card payment", so a replayed transfer key conflicts) and both
+  lines. Replaying a key with a different card, paying account, amount, date
+  or note is an `IdempotencyConflictError`, never a silent change, and
+  nothing is written.
+- **Void** posts the exact mirror (Cr the card / Dr the paying account), so
+  the amount owed and the balance both come back. Posted-entry immutability
+  and the one-way void are unchanged.
+- **Payee.** A card payment has no payee, like a transfer and an opening
+  balance; the note is editable and the journal keeps its original text.
+- **Database.** The row CHECK `transactions_shape` gains a `card_payment`
+  branch (two distinct accounts, no category) and an `ELSE false`, so a kind
+  added later without a branch is refused instead of silently accepted (the
+  old `CASE` yielded NULL for an unhandled kind, which a CHECK accepts).
+  `assert_transaction_valid` (deferred, at COMMIT) requires an asset source
+  of type `bank` or `cash`, a liability destination of type `credit_card`,
+  and exactly Dr the card / Cr the paying account for the transaction's
+  amount. Archived accounts, other owners' rows and currency mismatches are
+  refused by the existing insert guard, RLS and composite foreign keys,
+  unchanged.
+- **UI.** "Card payment" is a fourth type on the transaction form, with
+  "Paid from" listing bank and cash accounts only and "Card to pay" listing
+  cards only; there is no category and no payee field. Switching type clears
+  a selection the new type's list cannot offer, so no stale account id is
+  submitted. A card's page links to "Record repayment" with the card
+  preselected. In history a payment reads as money in on the card's page (the
+  debt fell), money out on the paying account's page, and neutral elsewhere,
+  so it never enters expense or income totals.
+
+**Out of scope for 5C:** refunds and chargebacks, cashback and other income
+to a card, cash advances, balance transfers and card-to-card payments,
+paying a card in another currency (FX), statements and reconciliation,
+minimum payments, credit limits and available credit, due dates, autopay,
+interest accrual, and opening credit balances.
 
 ### Migrations
 
@@ -186,12 +266,74 @@ available credit, due dates, interest accrual.
    and privileges and every trigger before and after, and only that one
    function body differs.
 
-In all three, no table, column, grant, policy or trigger is added or
-removed, and the `SECURITY DEFINER` set is unchanged (the catalog tests pin
-both).
+4. `20261026000000_card_payment_kind` (Milestone 5C): only
+   `ALTER TYPE transaction_kind ADD VALUE 'card_payment'`, for the same
+   PostgreSQL reason as 0600. Unused, it changes nothing. In the window
+   before the next migration, a raw-SQL `card_payment` row would not be
+   caught by `transactions_shape` (its `CASE` has no `ELSE` yet, so an
+   unhandled kind yields NULL, which a CHECK accepts); `assert_transaction_valid`
+   still requires exactly Dr destination / Cr source for it, which is the
+   card-payment template, and no application code writes the kind.
+5. `20261026000100_card_payments` (Milestone 5C):
+   - `SET lock_timeout = '5s'`, then `LOCK TABLE finora.transactions IN
+     ACCESS EXCLUSIVE MODE` — the same shape as 0700, and for two reasons.
+     **`prisma migrate deploy` (7.10.1) does not reliably wrap a migration
+     file in a transaction**, and whether a file gets one depends on its
+     statements. Measured on scratch databases: a file containing only
+     `LOCK TABLE` fails with "LOCK TABLE can only be used in transaction
+     blocks" (no enclosing transaction), and `CREATE TABLE; SELECT 1/0`
+     leaves the table behind (not atomic) — yet the same pair preceded by a
+     `LOCK TABLE` rolls back completely. Taking the lock explicitly
+     therefore (a) gives this file one transaction, so a failure anywhere
+     rolls back the CHECK *and* the function together, and (b) puts the wait
+     for the lock the `ALTER TABLE` needs anyway under `lock_timeout`.
+     `lock_timeout` uses a plain `SET`, not `SET LOCAL`: measured on the real
+     file, `SET LOCAL` was discarded before the lock was taken and a
+     contended deploy waited **689s** without giving up, while the plain SET
+     fails it in ~5s with `55P03`. A plain SET is correct whether or not the
+     file gets an enclosing transaction; the last statement restores
+     `lock_timeout = DEFAULT`, and on failure Prisma closes the connection,
+     so the bound never leaks into a later migration.
+   - Replaces `transactions_shape` (one `ALTER TABLE` with a `DROP
+     CONSTRAINT` and an `ADD CONSTRAINT`), adding the `card_payment` branch
+     and `ELSE false`. This takes **ACCESS EXCLUSIVE** on
+     `finora.transactions` (readers and writers wait) and scans the table
+     once to validate. Every existing row satisfies the new predicate — the
+     five existing branches are unchanged and no row has another kind — so
+     the validation cannot refuse; the test asserts the constraint comes out
+     `convalidated`.
+   - Replaces `assert_transaction_valid` (`CREATE OR REPLACE`, still
+     `SECURITY INVOKER` behind the `SECURITY DEFINER` trigger function,
+     `search_path = ''` restated, `EXECUTE` revoked from PUBLIC) with the
+     card-payment rule. Existing rows are not re-checked: this only adds a
+     rule for a kind no row has, and every other branch is unchanged.
+   - No table, column, grant, policy or trigger is added or removed, and no
+     row is written. A scratch-database test compares every finora
+     function's attributes, owner, privileges and body and every trigger
+     before and after, and every constraint on `transactions`: only
+     `assert_transaction_valid`'s body and `transactions_shape`'s definition
+     differ.
+   - **Failure leaves nothing partly applied**, verified two ways on scratch
+     databases. With a reader holding `ACCESS SHARE`, the deploy fails after
+     ~5s (`55P03`) with `transactions_shape` and `assert_transaction_valid`
+     byte-identical to before. With a failing statement injected at the end
+     of the real file, both objects are again byte-identical: the explicit
+     `LOCK TABLE` gives the file one transaction, so the CHECK cannot be
+     swapped without the function. Recovery is
+     `prisma migrate resolve --rolled-back 20261026000100_card_payments` then
+     redeploy; re-running from the start is safe, since
+     `DROP`/`ADD CONSTRAINT` and `CREATE OR REPLACE` are idempotent in effect
+     (verified: resolve plus redeploy completed and left the CHECK
+     `convalidated`). A failure of `20261026000100` does leave
+     `20261026000000`'s enum value applied — a separate file — which is the
+     documented, harmless intermediate state.
 
-**Hosted status:** these migrations (0600, 0700 and 0800) have not been run
-against hosted Supabase. They were tested on local scratch databases only, which does not
+In all five, no table, column, grant, policy or trigger is added or
+removed, and the `SECURITY DEFINER` set is unchanged (the catalog tests pin
+both). 0500-0800 write no enum value; 0600 and 20261026000000 each add one.
+
+**Hosted status:** these migrations (0600, 0700, 0800 and the two 5C
+migrations) have not been run against hosted Supabase. They were tested on local scratch databases only, which does not
 establish hosted readiness (docs/runbooks/hosted-setup.md, "Credit-card
 account migrations").
 
@@ -211,13 +353,31 @@ needed: 0800 only relaxes a COMMIT-time check, and code already running
 card expense is refused at COMMIT and the user sees a generic "the ledger
 refused this change" error, with nothing written.
 
-**Rollback:** all three migrations are forward-only. An enum value cannot be
+For 5C: migrate (`20261026000000`, then `20261026000100`, normally one
+`migrate deploy` run), then deploy the 5C code. **A brief maintenance window
+or a quiet moment is advisable**, unlike 5B: `20261026000100` takes ACCESS
+EXCLUSIVE on `finora.transactions` to replace the row CHECK, so transaction
+reads and writes wait for it (a single owner's table is small, so this is
+short, and `lock_timeout = '5s'` bounds the wait for the lock itself, failing
+the deploy in ~5s instead of queueing traffic). Code
+already running (4D, 5A or 5B) never posts a card payment, so migrating
+ahead of the deploy is safe. The 5C code needs both migrations: without the
+enum value, recording a repayment fails when the row is written; with the
+enum value but not `20261026000100`, it is refused at COMMIT and the user
+sees a generic "the ledger refused this change" error, with nothing written.
+
+**Rollback:** all five migrations are forward-only. An enum value cannot be
 dropped. Undoing 0700 would be a new, reviewed migration restoring the
 previous function bodies, valid only while no credit-card account exists.
 Undoing 0800 likewise would restore 0700's `assert_transaction_valid`, valid
 only while no card expense exists: afterwards the check runs again on every
 UPDATE of a transaction (voiding it, editing its payee or note), so restored
-5A rules would refuse those updates for existing card expenses.
+5A rules would refuse those updates for existing card expenses. Undoing
+`20261026000100` would restore 0800's `assert_transaction_valid` and
+`transactions_shape`, valid only while no card payment exists: the restored
+CHECK has no `card_payment` branch, so with the `ELSE false` it would refuse
+every existing payment on any UPDATE of it, and without the branch the
+COMMIT-time check would too.
 
 Once a credit-card account exists, rolling the application back to pre-5A
 code is not a supported path. That code does not know the `credit_card`
@@ -230,7 +390,12 @@ nothing incorrect is posted, but old code surfaces a generic ledger error.
 Dr category / Cr card template and is accepted, which is correct.) Rolling
 5B code back to 5A code keeps existing card expenses readable and voidable
 (the database still accepts them), but 5A code refuses new ones; this path
-has not been tested end to end.
+has not been tested end to end. The same holds for 5C: rolling 5C code back
+to 5B code leaves existing card payments in the database (readable and
+voidable, since the kind and the rules remain), but 5B code does not know
+the kind — `RECORD_KIND_LABELS[kind]` is undefined for it, so history and
+the type filter would render a missing label — and it refuses new ones. This
+path has not been tested either.
 Operators should fix forward; roll the application back only with a
 reviewed, explicit recovery plan, and never by deleting account history or
 changing a ledger account's kind.
@@ -243,8 +408,14 @@ changing a ledger account's kind.
 - Two hand-written PL/pgSQL functions grew. Their previous bodies are in
   migrations `20261025000300`; diff against it when reviewing.
 - Account-picker filtering and the card refusals were narrowed by 5B (cards
-  pay expenses) and are narrowed again by the payment and refund milestones.
-- **Deferred:** card payments, refunds, opening credit balances, credit
-  limits and available credit, statements, due dates, interest accrual (an
-  interest charge or fee can be recorded by hand as an expense paid by
-  card), cashback, cash advances and balance transfers, FX.
+  pay expenses) and again by 5C (cards are paid), and would be narrowed once
+  more by a refund milestone.
+- `transaction_kind` now has a fifth value, and `transactions_shape` fails
+  closed on an unhandled one. Adding a kind therefore means: an enum
+  migration, a branch in that CHECK, a branch in `assert_transaction_valid`,
+  the Prisma enum, and `RECORD_KIND_LABELS` — which is the intended cost.
+- **Deferred:** refunds, opening credit balances, credit limits and
+  available credit, statements, due dates, minimum payments and autopay,
+  interest accrual (an interest charge or fee can be recorded by hand as an
+  expense paid by card), cashback, cash advances, balance transfers,
+  card-to-card payments, FX.

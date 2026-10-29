@@ -11,16 +11,25 @@ import { Field, FormError } from "../shared/field";
 import { type ActionState, INITIAL_STATE } from "../shared/form-state";
 import { recordTransactionAction } from "./actions";
 
-type Kind = "income" | "expense" | "transfer";
+type Kind = "income" | "expense" | "transfer" | "card_payment";
 type Option = { id: string; label: string };
-/** `card`: a credit card, which can only pay an expense (not receive income or take part in a transfer). */
+/** `card`: a credit card. It can pay an expense or be paid by a card payment, and nothing else. */
 type AccountOption = Option & { currencyCode: string; exponent: number; card: boolean };
 
 const KINDS: readonly { value: Kind; label: string; hint: string }[] = [
   { value: "expense", label: "Expense", hint: "Money spent from an account or on a credit card" },
   { value: "income", label: "Income", hint: "Money received into an account" },
   { value: "transfer", label: "Transfer", hint: "Moving money between your own accounts" },
+  { value: "card_payment", label: "Card payment", hint: "Paying a credit card from a bank or cash account" },
 ];
+
+/** The submit button's label; "Record card_payment" would read badly. */
+const ACTION_LABEL: Record<Kind, string> = {
+  expense: "Record expense",
+  income: "Record income",
+  transfer: "Record transfer",
+  card_payment: "Record card payment",
+};
 
 function AccountSelect({
   name,
@@ -68,6 +77,7 @@ export function TransactionForm({
   today,
   initialKind,
   initialSourceAccountId,
+  initialDestinationAccountId,
   accounts,
   incomeCategories,
   expenseCategories,
@@ -77,6 +87,8 @@ export function TransactionForm({
   initialKind: Kind;
   /** Preselected "Paid from" / "From account" (e.g. from an account's page). */
   initialSourceAccountId?: string;
+  /** Preselected "Card to pay" (from a card's page). */
+  initialDestinationAccountId?: string;
   accounts: readonly AccountOption[];
   incomeCategories: readonly Option[];
   expenseCategories: readonly Option[];
@@ -86,7 +98,7 @@ export function TransactionForm({
   const errors = state.fieldErrors ?? {};
   const [kind, setKind] = useState<Kind>((values["kind"] as Kind | undefined) ?? initialKind);
   const [source, setSource] = useState(values["sourceAccountId"] ?? initialSourceAccountId ?? "");
-  const [destination, setDestination] = useState(values["destinationAccountId"] ?? "");
+  const [destination, setDestination] = useState(values["destinationAccountId"] ?? initialDestinationAccountId ?? "");
   // Counts action results (each a refused submission; success redirects).
   const [result, setResult] = useState(state);
   const [round, setRound] = useState(0);
@@ -95,14 +107,20 @@ export function TransactionForm({
     setRound(round + 1);
   }
 
-  // Cards can only pay an expense: income and transfers list bank and cash only.
+  // A card may only pay an expense or be paid by a card payment: every other
+  // picker lists bank and cash accounts only.
   const nonCards = accounts.filter((a) => !a.card);
+  const cards = accounts.filter((a) => a.card);
+  const isCard = (id: string) => accounts.find((a) => a.id === id)?.card === true;
   const sources = kind === "expense" ? accounts : nonCards;
+  const destinations = kind === "card_payment" ? cards : nonCards.filter((a) => kind !== "transfer" || a.id !== source);
   const changeKind = (next: Kind) => {
     setKind(next);
-    if (next !== "expense" && accounts.find((a) => a.id === source)?.card) setSource("");
+    // Drop a choice the next kind's list cannot offer, so no stale id is submitted.
+    if (next !== "expense" && isCard(source)) setSource("");
+    if (next === "card_payment" ? !isCard(destination) : isCard(destination)) setDestination("");
     // A transfer's destination list leaves out the source, so the browser drops that choice.
-    if (next === "transfer" && destination !== "" && destination === source) setDestination("");
+    else if (next === "transfer" && destination !== "" && destination === source) setDestination("");
   };
   // A transfer's destination list leaves out the source, so choosing it as the source clears it.
   const changeSource = (id: string) => {
@@ -121,7 +139,7 @@ export function TransactionForm({
       <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
       <fieldset className="grid gap-2">
         <legend className="mb-1 text-sm font-medium">Type</legend>
-        <div className="grid gap-2 sm:grid-cols-3">
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           {KINDS.map((k) => (
             <label
               key={k.value}
@@ -153,7 +171,13 @@ export function TransactionForm({
             label={kind === "transfer" ? "From account" : "Paid from"}
             accounts={sources}
             error={errors["sourceAccountId"]}
-            hint={kind === "expense" && currency?.card ? "Paid by credit card: adds to the amount owed on the card." : undefined}
+            hint={
+              kind === "expense" && currency?.card
+                ? "Paid by credit card: adds to the amount owed on the card."
+                : kind === "card_payment"
+                  ? "The bank or cash account the money comes from."
+                  : undefined
+            }
             round={round}
             value={source}
             onChange={changeSource}
@@ -162,9 +186,10 @@ export function TransactionForm({
         {kind !== "expense" ? (
           <AccountSelect
             name="destinationAccountId"
-            label={kind === "transfer" ? "To account" : "Received into"}
-            accounts={kind === "transfer" ? nonCards.filter((a) => a.id !== source) : nonCards}
+            label={kind === "transfer" ? "To account" : kind === "card_payment" ? "Card to pay" : "Received into"}
+            accounts={destinations}
             error={errors["destinationAccountId"]}
+            hint={kind === "card_payment" ? "The payment reduces the amount owed on this card. It is not an expense." : undefined}
             round={round}
             value={destination}
             onChange={setDestination}
@@ -210,7 +235,7 @@ export function TransactionForm({
         <Field name="date" label="Date" error={errors["date"]}>
           {(props) => <Input {...props} type="date" defaultValue={values["date"] ?? today} required />}
         </Field>
-        {kind !== "transfer" ? (
+        {kind === "income" || kind === "expense" ? (
           <Field name="payee" label={kind === "income" ? "Received from (optional)" : "Paid to (optional)"} error={errors["payee"]}>
             {(props) => <Input {...props} maxLength={100} autoComplete="off" defaultValue={values["payee"]} />}
           </Field>
@@ -222,7 +247,7 @@ export function TransactionForm({
       <FormError state={state} />
       <div>
         <Button type="submit" disabled={pending}>
-          {pending ? "Saving…" : `Record ${kind}`}
+          {pending ? "Saving…" : ACTION_LABEL[kind]}
         </Button>
       </div>
     </form>

@@ -55,7 +55,8 @@ invariants are unchanged.
   the **opening-balance equity** account per currency, created on first use.
 - **`transactions`** records the business meaning of exactly one posted
   journal entry:
-  - Columns: `kind` (`income | expense | transfer | opening_balance`),
+  - Columns: `kind` (`income | expense | transfer | opening_balance`;
+    `card_payment` since ADR 0008's Milestone 5C),
     `occurred_on`, a positive `amount_minor`, `currency_code`, the source
     and/or destination account, the category, `payee`, `note`,
     `journal_entry_id`, `reversal_entry_id` and `voided_at` (set together,
@@ -81,10 +82,13 @@ two lines, for the same amount:
 | income | destination account (asset) | category's income account |
 | expense | category's expense account | source account (asset) |
 | transfer | destination account (asset) | source account (asset) |
+| card_payment | the card (liability) | source account (asset) |
 | opening_balance | the account (asset) | opening-balance equity (per currency) |
 
 ADR 0008 adds the liability direction: a credit card's opening amount owed is
-Dr opening-balance equity, Cr the card.
+Dr opening-balance equity, Cr the card. It also adds `card_payment`
+(Milestone 5C), the repayment of a card from a bank or cash account; like a
+transfer it has no category and is neither income nor expense.
 
 - **Amounts** are decimal strings parsed exactly by the money module in the
   account's currency. They must be positive and fit a ledger line. There is no
@@ -92,7 +96,8 @@ Dr opening-balance equity, Cr the card.
 - **Entry text:** the entry description is the kind plus the payee ("Expense to
   BigBasket"). The note is the memo of the first line. Both are therefore part
   of the ledger's idempotency fingerprint and audit trail.
-- **Transfers** have no category and are neither income nor expense.
+- **Transfers and card payments** have no category and are neither income
+  nor expense.
 
 ### Opening balances (accounting treatment)
 
@@ -226,9 +231,9 @@ replaces it with an application-defined comparison key stored in
   owner), so N queries per page is acceptable for now; a batched balance query
   can come later without changing the model.
 - **Deferred:**
-  - credit cards (foundation and card-paid expenses in ADR 0008; payments
-    and refunds still deferred), loans, investments and deposits (further account
-    types, likely liability-normal);
+  - credit cards (foundation, card-paid expenses and card payments in
+    ADR 0008; refunds still deferred), loans, investments and deposits
+    (further account types, likely liability-normal);
   - FX transfers;
   - editing a transaction through a single correction step (today: void and
     re-enter);

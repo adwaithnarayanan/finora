@@ -16,11 +16,13 @@ const CARD = "22222222-2222-4222-8222-222222222222";
 const WALLET = "33333333-3333-4333-8333-333333333333";
 const SHOPPING = "44444444-4444-4444-8444-444444444444";
 const SALARY = "55555555-5555-4555-8555-555555555555";
+const AMEX = "77777777-7777-4777-8777-777777777777";
 
 const accounts = [
   { id: BANK, label: "Axis Savings (₹50,000.00)", currencyCode: "INR", exponent: 2, card: false },
   { id: CARD, label: "HDFC Card (Owed ₹12,000.00)", currencyCode: "INR", exponent: 2, card: true },
   { id: WALLET, label: "Wallet (₹0.00)", currencyCode: "INR", exponent: 2, card: false },
+  { id: AMEX, label: "Amex (Nothing owed (₹0.00))", currencyCode: "INR", exponent: 2, card: true },
 ];
 
 /** Refuses every submission, echoing what was submitted (as the real action does). */
@@ -31,13 +33,20 @@ function refuse(field: string, message: string) {
   }));
 }
 
-function renderForm(props: { initialKind?: "income" | "expense" | "transfer"; initialSourceAccountId?: string } = {}) {
+function renderForm(
+  props: {
+    initialKind?: "income" | "expense" | "transfer" | "card_payment";
+    initialSourceAccountId?: string;
+    initialDestinationAccountId?: string;
+  } = {},
+) {
   return render(
     <TransactionForm
       idempotencyKey="66666666-6666-4666-8666-666666666666"
       today="2026-10-24"
       initialKind={props.initialKind ?? "expense"}
       {...(props.initialSourceAccountId ? { initialSourceAccountId: props.initialSourceAccountId } : {})}
+      {...(props.initialDestinationAccountId ? { initialDestinationAccountId: props.initialDestinationAccountId } : {})}
       accounts={accounts}
       incomeCategories={[{ id: SALARY, label: "Salary" }]}
       expenseCategories={[{ id: SHOPPING, label: "Shopping" }]}
@@ -181,5 +190,73 @@ describe("TransactionForm card choices", () => {
     fireEvent.click(radio(/^Expense/));
     expect(select("Paid from").value).toBe("");
     expect(screen.queryByText(/Paid by credit card/)).not.toBeInTheDocument();
+  });
+});
+
+describe("TransactionForm card payments", () => {
+  it("offers only bank and cash accounts to pay from, and only cards to be paid", () => {
+    renderForm({ initialKind: "card_payment" });
+    expect(optionLabels("Paid from")).toEqual(["Choose an account", "Axis Savings (₹50,000.00)", "Wallet (₹0.00)"]);
+    expect(optionLabels("Card to pay")).toEqual(["Choose an account", "HDFC Card (Owed ₹12,000.00)", "Amex (Nothing owed (₹0.00))"]);
+    // No category and no payee: a card payment is neither income nor an expense.
+    expect(screen.queryByLabelText("Category")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Paid to/)).not.toBeInTheDocument();
+    expect(screen.getByText("The payment reduces the amount owed on this card. It is not an expense.")).toBeInTheDocument();
+  });
+
+  it("preselects the card it was opened from and submits both sides", async () => {
+    refuse("amount", "Enter an amount greater than zero, like 1250 or 1250.50");
+    renderForm({ initialKind: "card_payment", initialDestinationAccountId: CARD });
+    expect(select("Card to pay").value).toBe(CARD);
+    fireEvent.change(select("Paid from"), { target: { value: BANK } });
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "0" } });
+    fireEvent.change(screen.getByLabelText(/^Note/), { target: { value: "Oct statement" } });
+
+    await submit(/Record card payment/, "Enter an amount greater than zero, like 1250 or 1250.50");
+    expect(lastSubmitted()).toMatchObject({
+      kind: "card_payment",
+      sourceAccountId: BANK,
+      destinationAccountId: CARD,
+      amount: "0",
+      note: "Oct statement",
+    });
+    // The refused submission keeps every value, both selects included.
+    expect(radio(/^Card payment/).checked).toBe(true);
+    expect(select("Paid from").value).toBe(BANK);
+    expect(select("Card to pay").value).toBe(CARD);
+    expect(screen.getByLabelText("Amount")).toHaveValue("0");
+    expect(screen.getByLabelText(/^Note/)).toHaveValue("Oct statement");
+  });
+
+  it("drops a destination the new kind cannot offer, so no stale account is submitted", async () => {
+    refuse("sourceAccountId", "Choose the account paying the card");
+    renderForm({ initialKind: "transfer" });
+    fireEvent.change(select("From account"), { target: { value: BANK } });
+    fireEvent.change(select("To account"), { target: { value: WALLET } });
+
+    // Switching to a card payment cannot keep a bank account as the destination.
+    fireEvent.click(radio(/^Card payment/));
+    expect(select("Card to pay").value).toBe("");
+    expect(optionLabels("Card to pay")).not.toContain("Wallet (₹0.00)");
+
+    // And the card chosen here is dropped on the way back to a transfer.
+    fireEvent.change(select("Card to pay"), { target: { value: CARD } });
+    fireEvent.click(radio(/^Transfer/));
+    expect(select("To account").value).toBe("");
+    fireEvent.click(radio(/^Income/));
+    expect(select("Received into").value).toBe("");
+
+    fireEvent.click(radio(/^Card payment/));
+    await submit(/Record card payment/, "Choose the account paying the card");
+    expect(lastSubmitted()).toMatchObject({ kind: "card_payment", destinationAccountId: "" });
+  });
+
+  it("clears a card chosen as the paying account of an expense when switching to a card payment", () => {
+    renderForm({ initialSourceAccountId: CARD });
+    expect(select("Paid from").value).toBe(CARD);
+    fireEvent.click(radio(/^Card payment/));
+    expect(select("Paid from").value).toBe("");
+    expect(optionLabels("Paid from")).not.toContain("HDFC Card (Owed ₹12,000.00)");
+    expect(screen.getByText("The bank or cash account the money comes from.")).toBeInTheDocument();
   });
 });

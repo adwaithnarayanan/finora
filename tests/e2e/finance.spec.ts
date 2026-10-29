@@ -306,8 +306,9 @@ test.describe("accounts and transactions (owner)", () => {
     await expect(page.getByText("Credit card · INR")).toBeVisible();
     await expect(balanceOn(page)).toHaveText("Owed ₹12,000.00");
     await expect(page.getByText("Owed ₹12,000.00 as of 1 Oct 2026")).toBeVisible();
-    await expect(page.getByText(/Card payments and refunds cannot be recorded yet/)).toBeVisible();
+    await expect(page.getByText(/A repayment from a bank or cash account reduces it/)).toBeVisible();
     await expect(page.getByRole("link", { name: "Record card expense" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Record repayment" })).toBeVisible();
     await expect(page.getByRole("list", { name: "Transactions" })).toContainText("−₹12,000.00"); // owed: money out
 
     // The type cannot be changed; the name can.
@@ -329,11 +330,15 @@ test.describe("accounts and transactions (owner)", () => {
     await expect(listed).toContainText("Credit card · INR");
     await expect(listed).toContainText("Owed ₹11,500.00");
 
-    // A card is offered only as the paying account of an expense.
+    // A card is offered as the paying account of an expense and as the card a
+    // card payment pays, and nowhere else.
     await page.goto("/transactions/new?type=income");
     await expect(page.getByLabel("Received into", { exact: true }).locator("option", { hasText: "HDFC Regalia" })).toHaveCount(0);
     await page.getByLabel(/^Expense/).check();
     await expect(page.getByLabel("Paid from", { exact: true }).locator("option", { hasText: "HDFC Regalia (Owed ₹11,500.00)" })).toHaveCount(1);
+    await page.getByLabel(/^Card payment/).check();
+    await expect(page.getByLabel("Card to pay", { exact: true }).locator("option", { hasText: "HDFC Regalia (Owed ₹11,500.00)" })).toHaveCount(1);
+    await expect(page.getByLabel("Paid from", { exact: true }).locator("option", { hasText: "HDFC Regalia" })).toHaveCount(0);
   });
 
   test("a card with nothing owed, a refused negative amount, and bank accounts kept out of the card type", async ({ page }) => {
@@ -367,6 +372,14 @@ test.describe("accounts and transactions (owner)", () => {
     await page.goto("/transactions/new?type=transfer");
     await expect(page.getByLabel("From account", { exact: true }).locator("option", { hasText: "Amex" })).toHaveCount(0);
     await expect(page.getByLabel("To account", { exact: true }).locator("option", { hasText: "Amex" })).toHaveCount(0);
+
+    // A card payment's pickers are the mirror: no card pays, and only cards
+    // are paid.
+    await page.goto("/transactions/new?type=card_payment");
+    await expect(page.getByLabel("Paid from", { exact: true }).locator("option", { hasText: "Amex" })).toHaveCount(0);
+    await expect(page.getByLabel("Paid from", { exact: true }).locator("option", { hasText: "Axis Savings" })).toHaveCount(1);
+    await expect(page.getByLabel("Card to pay", { exact: true }).locator("option", { hasText: "Amex" })).toHaveCount(1);
+    await expect(page.getByLabel("Card to pay", { exact: true }).locator("option", { hasText: "Axis Savings" })).toHaveCount(0);
   });
 
   test("record an expense paid by card: the amount owed grows and the card's history shows it", async ({ page }) => {
@@ -423,6 +436,165 @@ test.describe("accounts and transactions (owner)", () => {
     await expect(balanceOn(page)).toHaveText("₹50,000.00");
     await page.goto("/transactions");
     await expect(page.getByRole("list", { name: "Transactions" }).getByRole("listitem").filter({ hasText: "Bata" })).toContainText("HDFC Card");
+  });
+
+  test("record a repayment from a bank account to a credit card: the amount owed and the balance both fall", async ({ page }) => {
+    await addDefaultCategories(page);
+    await createAccount(page, "Axis Savings", { opening: "50000", asOf: "2026-10-01" });
+    await page.goto("/accounts/new");
+    await page.getByLabel("Account name").fill("HDFC Card");
+    await page.getByLabel("Type").selectOption("credit_card");
+    await page.getByLabel("Amount owed today").fill("12000");
+    await page.getByLabel("As of").fill("2026-10-01");
+    await page.getByRole("button", { name: "Create account" }).click();
+    await expect(balanceOn(page)).toHaveText("Owed ₹12,000.00");
+
+    // A card expense first, so the repayment is measured against real spending.
+    await page.getByRole("link", { name: "Record card expense" }).click();
+    const expenseForm = transactionForm(page);
+    await page.getByLabel("Category", { exact: true }).selectOption({ label: "Shopping" });
+    await expenseForm.getByLabel("Amount", { exact: true }).fill("1250");
+    await page.getByLabel("Date", { exact: true }).fill("2026-10-24");
+    await page.getByLabel("Paid to (optional)").fill("Bata");
+    await page.getByRole("button", { name: "Record expense" }).click();
+    await expect(page).toHaveURL(/\/transactions\?recorded=/);
+
+    await openAccount(page, "HDFC Card");
+    await expect(balanceOn(page)).toHaveText("Owed ₹13,250.00");
+
+    // From the card's page, the card is preselected as the card being paid.
+    await page.getByRole("link", { name: "Record repayment" }).click();
+    await expect(page).toHaveURL(/\/transactions\/new\?type=card_payment&account=/);
+    await expect(page.getByLabel(/^Card payment/)).toBeChecked();
+    const cardToPay = page.getByLabel("Card to pay", { exact: true });
+    await expect(cardToPay.locator("option:checked")).toHaveText("HDFC Card (Owed ₹13,250.00)");
+    await expect(page.getByText("The payment reduces the amount owed on this card. It is not an expense.")).toBeVisible();
+    // No category and no payee: a repayment is not a purchase.
+    await expect(page.getByLabel("Category", { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel(/^Paid to/)).toHaveCount(0);
+
+    // The form was reached by a link click, so scope its fields to it.
+    const form = transactionForm(page);
+    const amount = form.getByLabel("Amount", { exact: true });
+    await expect(amount).toHaveCount(1);
+    const paidFrom = page.getByLabel("Paid from", { exact: true });
+    // A card is never offered as the account paying the card.
+    await expect(paidFrom.locator("option", { hasText: "HDFC Card" })).toHaveCount(0);
+    await choose(paidFrom, "Axis Savings");
+    await amount.fill("5000.005");
+    await page.getByLabel("Date", { exact: true }).fill("2026-10-26");
+    await page.getByLabel("Note (optional)").fill("Oct statement");
+
+    // A refused amount keeps every entered value, both selects included.
+    await page.getByRole("button", { name: "Record card payment" }).click();
+    await expect(page.getByText("Use at most 2 decimal places for INR")).toBeVisible();
+    await expect(amount).toHaveValue("5000.005");
+    await expect(page.getByLabel(/^Card payment/)).toBeChecked();
+    await expect(cardToPay.locator("option:checked")).toHaveText("HDFC Card (Owed ₹13,250.00)");
+    await expect(paidFrom.locator("option:checked")).toHaveText(/^Axis Savings/);
+    await expect(page.getByLabel("Note (optional)")).toHaveValue("Oct statement");
+    // Nothing was written by the refusal.
+    await page.goto("/transactions");
+    await expect(page.getByRole("list", { name: "Transactions" }).getByRole("listitem")).toHaveCount(3);
+
+    await openAccount(page, "HDFC Card");
+    await page.getByRole("link", { name: "Record repayment" }).click();
+    await choose(page.getByLabel("Paid from", { exact: true }), "Axis Savings");
+    await transactionForm(page).getByLabel("Amount", { exact: true }).fill("5000");
+    await page.getByLabel("Date", { exact: true }).fill("2026-10-26");
+    await page.getByLabel("Note (optional)").fill("Oct statement");
+    await page.getByRole("button", { name: "Record card payment" }).click();
+    await expect(page).toHaveURL(/\/transactions\?recorded=/);
+
+    // The card owes 5,000 less, and the bank account holds 5,000 less.
+    await openAccount(page, "HDFC Card");
+    await expect(balanceOn(page)).toHaveText("Owed ₹8,250.00");
+    const cardHistory = page.getByRole("list", { name: "Transactions" });
+    const repayment = cardHistory.getByRole("listitem").filter({ hasText: "Card payment" });
+    await expect(repayment).toContainText("26 Oct 2026");
+    await expect(repayment).toContainText("Axis Savings → HDFC Card");
+    await expect(repayment).toContainText("Oct statement");
+    // On the card's page it reads as money in: the debt went down.
+    await expect(repayment).toContainText("+₹5,000.00");
+    // It is labelled a card payment, never an expense.
+    await expect(repayment.getByText("Expense", { exact: true })).toHaveCount(0);
+
+    await openAccount(page, "Axis Savings");
+    await expect(balanceOn(page)).toHaveText("₹45,000.00");
+    await expect(
+      page.getByRole("list", { name: "Transactions" }).getByRole("listitem").filter({ hasText: "Card payment" }),
+    ).toContainText("−₹5,000.00"); // money out of the bank account
+
+    // Expense totals do not grow: the only expense is still the ₹1,250 purchase.
+    await page.goto("/transactions?type=expense");
+    const expenses = page.getByRole("list", { name: "Transactions" }).getByRole("listitem");
+    await expect(expenses).toHaveCount(1);
+    await expect(expenses.first()).toContainText("Bata");
+    await expect(expenses.first()).toContainText("−₹1,250.00");
+
+    // And the repayment is findable as its own type.
+    await page.goto("/transactions?type=card_payment");
+    const payments = page.getByRole("list", { name: "Transactions" }).getByRole("listitem");
+    await expect(payments).toHaveCount(1);
+    await expect(payments.first()).toContainText("Axis Savings → HDFC Card");
+    // Seen from no account it is neutral: it changes nothing the owner is worth.
+    await expect(payments.first()).not.toContainText("+₹5,000.00");
+    await expect(payments.first()).not.toContainText("−₹5,000.00");
+
+    // The detail page names both sides, is labelled a card payment, and
+    // offers no payee to edit.
+    await payments.first().getByRole("link").click();
+    await expect(page).toHaveURL(/\/transactions\/[0-9a-f-]+$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Axis Savings → HDFC Card" })).toBeVisible();
+    await expect(page.getByText("Transactions / Card payment")).toBeVisible();
+    await expect(page.getByText("Paid from", { exact: true })).toBeVisible();
+    await expect(page.getByText("Card paid", { exact: true })).toBeVisible();
+    // Exact labels: a substring match would also hit the transaction list's
+    // retained "Search payee or note" filter and the record form's
+    // "Note (optional)" (React Activity keeps visited routes mounted).
+    await expect(page.getByLabel("Payee", { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel("Note", { exact: true })).toBeVisible();
+  });
+
+  test("pay a card more than is owed: it becomes a credit balance, and ordinary flows still work", async ({ page }) => {
+    await createSampleHistory(page); // HDFC Savings ₹71,800.50, Wallet ₹2,000.00
+    await createAccount(page, "Amex", { type: "credit_card" });
+    await expect(balanceOn(page)).toHaveText("Nothing owed (₹0.00)");
+
+    await page.getByRole("link", { name: "Record repayment" }).click();
+    await choose(page.getByLabel("Paid from", { exact: true }), "HDFC Savings");
+    await transactionForm(page).getByLabel("Amount", { exact: true }).fill("800.50");
+    await page.getByLabel("Date", { exact: true }).fill("2026-10-26");
+    await page.getByRole("button", { name: "Record card payment" }).click();
+    await expect(page).toHaveURL(/\/transactions\?recorded=/);
+
+    // Paying a card that owes nothing leaves a credit balance in the owner's favour.
+    await openAccount(page, "Amex");
+    await expect(balanceOn(page)).toHaveText("Credit balance ₹800.50");
+    await openAccount(page, "HDFC Savings");
+    await expect(balanceOn(page)).toHaveText("₹71,000.00");
+
+    // An ordinary transfer and a card expense are unaffected.
+    await record(page, async (p) => {
+      await p.getByLabel(/^Transfer/).check();
+      await choose(p.getByLabel("From account", { exact: true }), "HDFC Savings");
+      await choose(p.getByLabel("To account", { exact: true }), "Wallet");
+      await p.getByLabel("Amount", { exact: true }).fill("1000");
+      await p.getByLabel("Date", { exact: true }).fill("2026-10-27");
+    });
+    await record(page, async (p) => {
+      await expect(p.getByLabel(/^Expense/)).toBeChecked();
+      await choose(p.getByLabel("Paid from", { exact: true }), "Amex");
+      await p.getByLabel("Category", { exact: true }).selectOption({ label: "Groceries" });
+      await p.getByLabel("Amount", { exact: true }).fill("500");
+      await p.getByLabel("Date", { exact: true }).fill("2026-10-27");
+    });
+    await openAccount(page, "HDFC Savings");
+    await expect(balanceOn(page)).toHaveText("₹70,000.00");
+    await openAccount(page, "Wallet");
+    await expect(balanceOn(page)).toHaveText("₹3,000.00");
+    await openAccount(page, "Amex");
+    await expect(balanceOn(page)).toHaveText("Credit balance ₹300.50"); // 800.50 credit − 500 spent
   });
 
   test("correct the opening balance: original reversed, replacement recorded", async ({ page }) => {

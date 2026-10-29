@@ -28,7 +28,7 @@ import {
 const CARD_EXPENSES = "20261025000800_card_expenses";
 const BEFORE = "20261025000700_account_ledger_class";
 const today = "2026-10-25";
-const UNSUPPORTED = /a credit card can only pay an expense; income and transfers use bank and cash accounts only/;
+const UNSUPPORTED = /a credit card can only pay an expense or be paid by a card payment; income and transfers use bank and cash accounts only/;
 
 const scratches: ScratchDatabase[] = [];
 const sets: MigrationSet[] = [];
@@ -551,7 +551,7 @@ describe("expenses paid by credit card (migrated scratch database)", () => {
       expect(otherOwnerId).not.toBe(ownerId);
     });
 
-    it("keeps the function private and invoker-rights, its trigger deferred and enabled, and the transaction kinds unchanged", async () => {
+    it("keeps the function private and invoker-rights, its trigger deferred and enabled, and pins the transaction kinds", async () => {
       const { rows } = await db.query(
         `SELECT p.prosecdef, array_to_string(p.proconfig, ',') AS config, pg_get_userbyid(p.proowner) AS owner,
                 has_function_privilege('finora_app', p.oid, 'EXECUTE') AS app_can_execute,
@@ -567,7 +567,8 @@ describe("expenses paid by credit card (migrated scratch database)", () => {
       );
       expect(trigger.rows).toEqual([{ fn: "finora.transactions_validate", tgenabled: "O", tgdeferrable: true, tginitdeferred: true, prosecdef: true }]);
       const kinds = await db.query("SELECT unnest(enum_range(NULL::finora.transaction_kind))::text AS kind");
-      expect(kinds.rows.map((r) => r.kind)).toEqual(["opening_balance", "income", "expense", "transfer"]);
+      // 'card_payment' was added by 20261026000000_card_payment_kind (Milestone 5C).
+      expect(kinds.rows.map((r) => r.kind)).toEqual(["opening_balance", "income", "expense", "transfer", "card_payment"]);
     });
   });
 });

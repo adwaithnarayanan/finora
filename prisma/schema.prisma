@@ -209,11 +209,15 @@ enum CategoryKind {
   @@schema("finora")
 }
 
+/// `card_payment` is a repayment of a credit card from a bank or cash
+/// account (ADR 0008, Milestone 5C): Dr the card, Cr the paying account. It
+/// debits no category and is neither income nor an expense.
 enum TransactionKind {
   opening_balance
   income
   expense
   transfer
+  card_payment
 
   @@map("transaction_kind")
   @@schema("finora")
@@ -314,7 +318,7 @@ model SystemLedgerAccount {
   @@schema("finora")
 }
 
-/// The business meaning of one posted journal entry (income, expense, transfer, opening balance).
+/// The business meaning of one posted journal entry (income, expense, transfer, card payment, opening balance).
 model FinanceTransaction {
   id                    String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   ownerId               String              @map("owner_id") @db.Uuid

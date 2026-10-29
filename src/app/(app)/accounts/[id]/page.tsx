@@ -81,10 +81,19 @@ async function AccountDetail({ params }: Pick<PageProps<"/accounts/[id]">, "para
             <Link href={`/transactions/new?type=expense&account=${view.id}`} className={buttonVariants({ size: "sm" })}>
               {card ? "Record card expense" : "Record transaction"}
             </Link>
+            {card ? (
+              <Link
+                href={`/transactions/new?type=card_payment&account=${view.id}`}
+                className={buttonVariants({ size: "sm", variant: "outline" })}
+              >
+                Record repayment
+              </Link>
+            ) : null}
           </div>
           {card ? (
             <p className="text-sm text-muted-foreground">
-              Expenses paid with this card add to the amount owed. Card payments and refunds cannot be recorded yet.
+              Expenses paid with this card add to the amount owed. A repayment from a bank or cash account reduces it and is
+              not an expense. Refunds cannot be recorded yet.
             </p>
           ) : null}
         </div>

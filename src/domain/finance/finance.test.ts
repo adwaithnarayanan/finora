@@ -12,7 +12,11 @@ import {
   DEFAULT_CATEGORIES,
   FinanceValidationError,
   IssueCollector,
+  RECORD_KIND_LABELS,
+  TRANSACTION_KINDS,
+  TWO_SIDED_KINDS,
   accountLifecycle,
+  isTwoSided,
   parseAccountType,
   parseAccountTypeChange,
   parseCategoryKind,
@@ -86,6 +90,33 @@ describe("parseTransactionIntent", () => {
     expect(transfer).toEqual({ kind: "transfer", amount: "1", date, sourceAccountId: id(1), destinationAccountId: id(2), note: null });
   });
 
+  it("parses a card-payment intent (two accounts, no payee, no category)", () => {
+    expect(
+      parseTransactionIntent({
+        kind: "card_payment",
+        amount: " 5000 ",
+        date,
+        sourceAccountId: id(1),
+        destinationAccountId: id(2),
+        categoryId: id(201),
+        payee: "ignored",
+        note: "  Oct statement  ",
+      }),
+    ).toEqual({ kind: "card_payment", amount: "5000", date, sourceAccountId: id(1), destinationAccountId: id(2), note: "Oct statement" });
+  });
+
+  it.each([
+    ["a missing paying account", { sourceAccountId: "" }, ["sourceAccountId"]],
+    ["a missing card", { destinationAccountId: "not-a-uuid" }, ["destinationAccountId"]],
+    ["the same account twice", { sourceAccountId: id(1), destinationAccountId: id(1) }, ["destinationAccountId"]],
+    ["a zero amount", { amount: "0" }, ["amount"]],
+    ["a negative amount", { amount: "-5000" }, ["amount"]],
+    ["an impossible date", { date: "2026-02-30" }, ["date"]],
+  ])("rejects a card payment with %s", (_label, override, fields) => {
+    const base = { kind: "card_payment", amount: "5000", date, sourceAccountId: id(1), destinationAccountId: id(2) };
+    expect(issuesOf(() => parseTransactionIntent({ ...base, ...override }))).toEqual(fields);
+  });
+
   it.each([
     ["unknown kind", { kind: "refund" }, ["kind"]],
     ["zero", { kind: "income", amount: "0.00" }, ["amount"]],
@@ -109,6 +140,7 @@ describe("posting templates", () => {
   const income = parseTransactionIntent({ kind: "income", amount: "100.50", date, destinationAccountId: id(1), categoryId: id(200), payee: "Acme", note: "Oct" });
   const expense = parseTransactionIntent({ kind: "expense", amount: "40", date, sourceAccountId: id(1), categoryId: id(201), payee: "Shop" });
   const transfer = parseTransactionIntent({ kind: "transfer", amount: "25", date, sourceAccountId: id(1), destinationAccountId: id(2) });
+  const cardPayment = parseTransactionIntent({ kind: "card_payment", amount: "5000", date, sourceAccountId: id(1), destinationAccountId: id(2) });
 
   it("income: Dr destination asset, Cr income category", () => {
     const plan = planTransaction(income, { destination: account(1), category: category("income"), categoryLedgerAccountId: id(300) });
@@ -143,6 +175,7 @@ describe("posting templates", () => {
       planTransaction(income, { destination: account(1), category: category("income"), categoryLedgerAccountId: id(300) }),
       planTransaction(expense, { source: account(1), category: category("expense"), categoryLedgerAccountId: id(301) }),
       planTransaction(transfer, { source: account(1), destination: account(2) }),
+      planTransaction(cardPayment, { source: account(1), destination: card(2) }),
     ]) {
       expect(plan.lines.map((l) => l.side).sort()).toEqual(["credit", "debit"]);
       expect(new Set(plan.lines.map((l) => l.amount)).size).toBe(1);
@@ -198,15 +231,91 @@ describe("posting templates", () => {
   it.each([
     ["income into a card", () => planTransaction(income, { destination: card(1), category: category("income"), categoryLedgerAccountId: id(300) }), "destinationAccountId"],
     ["a transfer from a card", () => planTransaction(transfer, { source: card(1), destination: account(2) }), "sourceAccountId"],
-    ["a transfer to a card (a card payment)", () => planTransaction(transfer, { source: account(1), destination: card(2) }), "destinationAccountId"],
+    ["a transfer to a card (a card payment has its own kind)", () => planTransaction(transfer, { source: account(1), destination: card(2) }), "destinationAccountId"],
     ["a transfer between cards", () => planTransaction(transfer, { source: card(1), destination: card(2) }), "destinationAccountId"],
-  ])("refuses %s: a credit card can only pay an expense in this release", (_label, fn, field) => {
+  ])("refuses %s: a card only pays an expense or is paid by a card payment", (_label, fn, field) => {
     try {
       fn();
       throw new Error("expected FinanceValidationError");
     } catch (error) {
       if (!(error instanceof FinanceValidationError)) throw error;
       expect(error.issues).toEqual([{ field, message: expect.stringMatching(/is a credit card; a card can only pay for an expense/) }]);
+    }
+  });
+
+  it("card payment: Dr the card's liability account, Cr the paying asset account (amount owed falls)", () => {
+    const payment = parseTransactionIntent({ kind: "card_payment", amount: "5000", date, sourceAccountId: id(1), destinationAccountId: id(2), note: "Oct statement" });
+    const plan = planTransaction(payment, { source: account(1), destination: card(2) });
+    expect(plan).toMatchObject({ kind: "card_payment", description: "Card payment", date });
+    expect(plan.amount.minor).toBe(500000n);
+    // Dr the card reduces its normal (credit) balance; Cr the bank reduces what is held.
+    expect(plan.lines).toEqual([
+      { accountId: id(102), side: "debit", amount: "5000.00", currency: "INR", memo: "Oct statement" },
+      { accountId: id(101), side: "credit", amount: "5000.00", currency: "INR", memo: null },
+    ]);
+  });
+
+  it("debits no category and so is neither income nor an expense", () => {
+    const plan = planTransaction(cardPayment, { source: account(1), destination: card(2), category: category("expense"), categoryLedgerAccountId: id(301) });
+    expect(plan.kind).toBe("card_payment");
+    // Only the two account ledger accounts are touched, whatever the caller resolved.
+    expect(plan.lines.map((l) => l.accountId)).toEqual([id(102), id(101)]);
+    expect(plan.lines.map((l) => l.accountId)).not.toContain(id(301));
+  });
+
+  it("pays a card more than is owed without complaint (it becomes a credit balance)", () => {
+    // The amount owed is not part of the plan: balances are derived from the
+    // ledger, never stored, and a card's normal balance may go negative.
+    const overpayment = parseTransactionIntent({ kind: "card_payment", amount: "999999", date, sourceAccountId: id(1), destinationAccountId: id(2) });
+    expect(planTransaction(overpayment, { source: account(1), destination: card(2) }).amount.minor).toBe(99999900n);
+  });
+
+  it("checks the amount's precision against the card's currency", () => {
+    const kwd = (n: number) => card(n, { currency: KNOWN_CURRENCIES.KWD });
+    const precise = parseTransactionIntent({ kind: "card_payment", amount: "1.234", date, sourceAccountId: id(1), destinationAccountId: id(2) });
+    expect(planTransaction(precise, { source: account(1, { currency: KNOWN_CURRENCIES.KWD }), destination: kwd(2) }).lines).toEqual([
+      { accountId: id(102), side: "debit", amount: "1.234", currency: "KWD", memo: null },
+      { accountId: id(101), side: "credit", amount: "1.234", currency: "KWD", memo: null },
+    ]);
+    const tooPrecise = parseTransactionIntent({ kind: "card_payment", amount: "1.001", date, sourceAccountId: id(1), destinationAccountId: id(2) });
+    expect(issuesOf(() => planTransaction(tooPrecise, { source: account(1), destination: card(2) }))).toEqual(["amount"]);
+  });
+
+  it.each([
+    ["a missing card", () => planTransaction(cardPayment, { source: account(1) }), ["destinationAccountId"]],
+    ["a missing paying account", () => planTransaction(cardPayment, { destination: card(2) }), ["sourceAccountId"]],
+    ["an archived card", () => planTransaction(cardPayment, { source: account(1), destination: card(2, { archived: true }) }), ["destinationAccountId"]],
+    ["an archived paying account", () => planTransaction(cardPayment, { source: account(1, { archived: true }), destination: card(2) }), ["sourceAccountId"]],
+    [
+      "a currency mismatch (no FX)",
+      () => planTransaction(cardPayment, { source: account(1), destination: card(2, { currency: KNOWN_CURRENCIES.USD }) }),
+      ["destinationAccountId"],
+    ],
+  ])("refuses a card payment with %s", (_label, fn, fields) => {
+    expect(issuesOf(fn)).toEqual(fields);
+  });
+
+  it("refuses a bank or cash account as the card being paid", () => {
+    try {
+      planTransaction(cardPayment, { source: account(1), destination: account(2) });
+      throw new Error("expected FinanceValidationError");
+    } catch (error) {
+      if (!(error instanceof FinanceValidationError)) throw error;
+      expect(error.issues).toEqual([
+        { field: "destinationAccountId", message: expect.stringMatching(/is not a credit card; choose the card you are paying/) },
+      ]);
+    }
+  });
+
+  it("refuses a card as the paying account, so one card never pays another", () => {
+    try {
+      planTransaction(cardPayment, { source: card(1), destination: card(2) });
+      throw new Error("expected FinanceValidationError");
+    } catch (error) {
+      if (!(error instanceof FinanceValidationError)) throw error;
+      expect(error.issues).toEqual([
+        { field: "sourceAccountId", message: expect.stringMatching(/is a credit card; a card can only pay for an expense or be paid/) },
+      ]);
     }
   });
 
@@ -274,6 +383,20 @@ describe("opening balance template", () => {
     expect(issuesOf(() => planOpeningBalance({ account: account(1), amount: "-500", date, equityLedgerAccountId: id(400) }))).toEqual([
       "openingAmount",
     ]);
+  });
+});
+
+describe("transaction kinds", () => {
+  it("labels every recordable kind, and only those", () => {
+    expect(Object.keys(RECORD_KIND_LABELS).sort()).toEqual([...TRANSACTION_KINDS, "opening_balance"].sort());
+    expect(RECORD_KIND_LABELS.card_payment).toBe("Card payment");
+    expect(TRANSACTION_KINDS).toContain("card_payment");
+  });
+
+  it("counts transfers and card payments as two-sided, and nothing else", () => {
+    expect([...TWO_SIDED_KINDS].sort()).toEqual(["card_payment", "transfer"]);
+    for (const kind of ["transfer", "card_payment"] as const) expect(isTwoSided(kind)).toBe(true);
+    for (const kind of ["income", "expense", "opening_balance"] as const) expect(isTwoSided(kind)).toBe(false);
   });
 });
 

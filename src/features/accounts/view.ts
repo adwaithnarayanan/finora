@@ -53,7 +53,8 @@ export function toAccountView(summary: AccountSummary): AccountView {
 
 /**
  * Options for transaction account pickers: active accounts. A credit card
- * (`card`) can only pay an expense; the form offers it nowhere else.
+ * (`card`) can pay an expense and be paid by a card payment; the form offers
+ * it nowhere else (income and transfers are bank and cash only).
  */
 export interface AccountOption {
   readonly id: string;

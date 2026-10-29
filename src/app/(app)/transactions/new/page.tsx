@@ -20,7 +20,7 @@ export default function NewTransactionPage({ searchParams }: PageProps<"/transac
     <div className="max-w-2xl">
       <PageHeader
         title="Record transaction"
-        description="Income, an expense (from an account or on a credit card), or a transfer between your accounts."
+        description="Income, an expense (from an account or on a credit card), a transfer between your accounts, or a payment towards a credit card."
       />
       <Suspense fallback={<PageLoading />}>
         <NewTransaction searchParams={searchParams} />
@@ -54,16 +54,19 @@ async function NewTransaction({ searchParams }: Pick<PageProps<"/transactions/ne
   const missing = (["income", "expense"] as const).filter((kind) => !usable(kind));
   // An explicit ?type= wins; otherwise start on a kind that can be recorded.
   const type =
-    params.type === "income" || params.type === "transfer" || params.type === "expense"
+    params.type === "income" || params.type === "transfer" || params.type === "expense" || params.type === "card_payment"
       ? params.type
       : usable("expense")
         ? "expense"
         : usable("income")
           ? "income"
           : "transfer";
-  // ?account= (from an account's page) preselects the paying account when the
-  // form can use it: any account for an expense, bank or cash for a transfer.
-  const preselected = options.find((o) => o.id === params.account && (type === "expense" || (type === "transfer" && !o.card)));
+  // ?account= (from an account's page) preselects that account on the side the
+  // form can use it: the paying account for an expense (any) or a transfer
+  // (bank or cash), and the card being paid for a card payment.
+  const named = options.find((o) => o.id === params.account);
+  const preselectedSource = named && (type === "expense" || (type === "transfer" && !named.card)) ? named : undefined;
+  const preselectedCard = named && type === "card_payment" && named.card ? named : undefined;
   return (
     <div className="grid gap-6">
       {categories.length === 0 ? (
@@ -98,7 +101,8 @@ async function NewTransaction({ searchParams }: Pick<PageProps<"/transactions/ne
         idempotencyKey={randomUUID()}
         today={todayInIndia()}
         initialKind={type}
-        {...(preselected ? { initialSourceAccountId: preselected.id } : {})}
+        {...(preselectedSource ? { initialSourceAccountId: preselectedSource.id } : {})}
+        {...(preselectedCard ? { initialDestinationAccountId: preselectedCard.id } : {})}
         accounts={options}
         incomeCategories={active.filter((c) => c.kind === "income").map((c) => ({ id: c.id, label: c.name }))}
         expenseCategories={active.filter((c) => c.kind === "expense").map((c) => ({ id: c.id, label: c.name }))}

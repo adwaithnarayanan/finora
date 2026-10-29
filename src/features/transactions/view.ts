@@ -1,6 +1,6 @@
 import "server-only";
 
-import { ACCOUNT_LEDGER_KIND, RECORD_KIND_LABELS, type RecordKind } from "@/domain/finance";
+import { ACCOUNT_LEDGER_KIND, RECORD_KIND_LABELS, type RecordKind, isTwoSided } from "@/domain/finance";
 import type { CategoryRecord, FinancialAccountRecord, TransactionRecord } from "@/server/finance";
 
 import { formatLedgerDate, formatMoney } from "../shared/format";
@@ -17,7 +17,8 @@ export interface TransactionView {
   readonly amount: string;
   /**
    * The effect on what the owner has: +1 money in, -1 money out (including a
-   * card's opening amount owed), 0 neither (transfer seen from no account).
+   * card's opening amount owed), 0 neither (a transfer or card payment seen
+   * from no account).
    */
   readonly direction: 1 | -1 | 0;
   readonly payee: string | null;
@@ -34,15 +35,18 @@ export interface Lookups {
 const nameOf = (lookups: Lookups, id: string | null) => (id ? (lookups.accounts.get(id)?.name ?? "Deleted account") : "");
 
 /**
- * `perspective`: the account a list is shown for. A transfer then reads as
- * money in or out of that account; elsewhere it is neutral.
+ * `perspective`: the account a list is shown for. A transfer or card payment
+ * then reads as money in or out of that account; elsewhere it is neutral
+ * (neither changes what the owner is worth). On a card's own page a payment
+ * reads as money in, because it reduces what is owed.
  */
 export function toTransactionView(t: TransactionRecord, lookups: Lookups, perspective?: string): TransactionView {
   const from = nameOf(lookups, t.sourceAccountId);
   const to = nameOf(lookups, t.destinationAccountId);
   const category = t.categoryId ? (lookups.categories.get(t.categoryId)?.name ?? "Category") : null;
-  let direction: 1 | -1 | 0 = t.kind === "expense" ? -1 : t.kind === "transfer" ? 0 : 1;
-  if (t.kind === "transfer" && perspective) direction = t.destinationAccountId === perspective ? 1 : -1;
+  const twoSided = isTwoSided(t.kind);
+  let direction: 1 | -1 | 0 = t.kind === "expense" ? -1 : twoSided ? 0 : 1;
+  if (twoSided && perspective) direction = t.destinationAccountId === perspective ? 1 : -1;
   const destination = t.destinationAccountId ? lookups.accounts.get(t.destinationAccountId) : undefined;
   if (t.kind === "opening_balance" && destination && ACCOUNT_LEDGER_KIND[destination.type] === "liability") direction = -1;
   return {
@@ -51,8 +55,8 @@ export function toTransactionView(t: TransactionRecord, lookups: Lookups, perspe
     kindLabel: RECORD_KIND_LABELS[t.kind],
     date: t.occurredOn,
     dateLabel: formatLedgerDate(t.occurredOn),
-    title: category ?? (t.kind === "transfer" ? `${from} → ${to}` : RECORD_KIND_LABELS[t.kind]),
-    accounts: t.kind === "transfer" ? `${from} → ${to}` : t.kind === "expense" ? from : to,
+    title: category ?? (twoSided ? `${from} → ${to}` : RECORD_KIND_LABELS[t.kind]),
+    accounts: twoSided ? `${from} → ${to}` : t.kind === "expense" ? from : to,
     amount: formatMoney(t.amount),
     direction,
     payee: t.payee,

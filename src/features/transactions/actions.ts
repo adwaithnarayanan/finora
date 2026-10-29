@@ -9,9 +9,10 @@ import { toActionState } from "../shared/errors";
 import { type ActionState, formEntries } from "../shared/form-state";
 
 /**
- * Records an income, expense or transfer from the submitted intent. The
- * server resolves every reference under the authorised owner and builds the
- * journal lines from its own templates; no lines are accepted from the form.
+ * Records an income, expense, transfer or card payment from the submitted
+ * intent. The server resolves every reference under the authorised owner and
+ * builds the journal lines from its own templates; no lines are accepted from
+ * the form.
  */
 export async function recordTransactionAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const owner = await requireOwner();
