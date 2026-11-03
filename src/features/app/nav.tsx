@@ -15,7 +15,10 @@ function NavLinks({ pathname }: { pathname: string | null }) {
     <nav aria-label="Main" className="-mx-1 flex gap-1 overflow-x-auto">
       {LINKS.map(({ href, label }) => {
         const active =
-          pathname !== null && (href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`));
+          pathname !== null &&
+          (href === "/"
+            ? pathname === "/"
+            : pathname === href || pathname.startsWith(`${href}/`));
         return (
           <Link
             key={href}
@@ -31,12 +34,10 @@ function NavLinks({ pathname }: { pathname: string | null }) {
   );
 }
 
-/** Main navigation with the current section marked (reads the URL, so render inside Suspense). */
 export function AppNav() {
   return <NavLinks pathname={usePathname()} />;
 }
 
-/** The same links without a current marker, for prerendering. */
 export function AppNavFallback() {
   return <NavLinks pathname={null} />;
 }

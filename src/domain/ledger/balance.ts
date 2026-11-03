@@ -29,10 +29,6 @@ export function balanceFromTotals(
   });
 }
 
-/**
- * Reconstructs an account's balance from entries. Drafts are ignored: only
- * posted entries have an accounting effect.
- */
 export function accountBalance(
   account: Pick<LedgerAccount, "id" | "kind" | "currency">,
   entries: readonly Pick<JournalEntry, "status" | "lines">[],

@@ -1,13 +1,18 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type ActionState, formEntries } from "../shared/form-state";
 import { recordTransactionAction } from "./actions";
 import { TransactionForm } from "./transaction-form";
 
-// The server action is replaced: these tests cover only what the form shows
-// and submits. Validation and authorisation stay on the server.
 vi.mock("./actions", () => ({ recordTransactionAction: vi.fn() }));
 const action = vi.mocked(recordTransactionAction);
 
@@ -21,19 +26,51 @@ const BATA = "88888888-8888-4888-8888-888888888888";
 const CHEMIST = "99999999-9999-4999-8999-999999999999";
 
 const accounts = [
-  { id: BANK, label: "Axis Savings (₹50,000.00)", currencyCode: "INR", exponent: 2, card: false },
-  { id: CARD, label: "HDFC Card (Owed ₹12,000.00)", currencyCode: "INR", exponent: 2, card: true },
-  { id: WALLET, label: "Wallet (₹0.00)", currencyCode: "INR", exponent: 2, card: false },
-  { id: AMEX, label: "Amex (Nothing owed (₹0.00))", currencyCode: "INR", exponent: 2, card: true },
+  {
+    id: BANK,
+    label: "Axis Savings (₹50,000.00)",
+    currencyCode: "INR",
+    exponent: 2,
+    card: false,
+  },
+  {
+    id: CARD,
+    label: "HDFC Card (Owed ₹12,000.00)",
+    currencyCode: "INR",
+    exponent: 2,
+    card: true,
+  },
+  {
+    id: WALLET,
+    label: "Wallet (₹0.00)",
+    currencyCode: "INR",
+    exponent: 2,
+    card: false,
+  },
+  {
+    id: AMEX,
+    label: "Amex (Nothing owed (₹0.00))",
+    currencyCode: "INR",
+    exponent: 2,
+    card: true,
+  },
 ];
 
-/** Refundable card purchases, as toRefundablePurchaseOptions builds them. */
 const purchases = [
-  { id: BATA, cardAccountId: CARD, categoryLabel: "Shopping", label: "24 Oct 2026 · Shopping · Bata · ₹1,250.00 (₹1,250.00 left)" },
-  { id: CHEMIST, cardAccountId: AMEX, categoryLabel: "Health", label: "20 Oct 2026 · Health · Chemist · ₹400.00 (₹150.00 left)" },
+  {
+    id: BATA,
+    cardAccountId: CARD,
+    categoryLabel: "Shopping",
+    label: "24 Oct 2026 · Shopping · Bata · ₹1,250.00 (₹1,250.00 left)",
+  },
+  {
+    id: CHEMIST,
+    cardAccountId: AMEX,
+    categoryLabel: "Health",
+    label: "20 Oct 2026 · Health · Chemist · ₹400.00 (₹150.00 left)",
+  },
 ];
 
-/** Refuses every submission, echoing what was submitted (as the real action does). */
 function refuse(field: string, message: string) {
   action.mockImplementation(async (_prev: ActionState, formData: FormData) => ({
     fieldErrors: { [field]: message },
@@ -43,11 +80,17 @@ function refuse(field: string, message: string) {
 
 function renderForm(
   props: {
-    initialKind?: "income" | "expense" | "transfer" | "card_payment" | "card_refund";
+    initialKind?:
+      "income" | "expense" | "transfer" | "card_payment" | "card_refund";
     initialSourceAccountId?: string;
     initialDestinationAccountId?: string;
     initialPurchaseId?: string;
-    purchases?: readonly { id: string; cardAccountId: string; categoryLabel: string; label: string }[];
+    purchases?: readonly {
+      id: string;
+      cardAccountId: string;
+      categoryLabel: string;
+      label: string;
+    }[];
   } = {},
 ) {
   return render(
@@ -55,9 +98,15 @@ function renderForm(
       idempotencyKey="66666666-6666-4666-8666-666666666666"
       today="2026-10-24"
       initialKind={props.initialKind ?? "expense"}
-      {...(props.initialSourceAccountId ? { initialSourceAccountId: props.initialSourceAccountId } : {})}
-      {...(props.initialDestinationAccountId ? { initialDestinationAccountId: props.initialDestinationAccountId } : {})}
-      {...(props.initialPurchaseId ? { initialPurchaseId: props.initialPurchaseId } : {})}
+      {...(props.initialSourceAccountId
+        ? { initialSourceAccountId: props.initialSourceAccountId }
+        : {})}
+      {...(props.initialDestinationAccountId
+        ? { initialDestinationAccountId: props.initialDestinationAccountId }
+        : {})}
+      {...(props.initialPurchaseId
+        ? { initialPurchaseId: props.initialPurchaseId }
+        : {})}
       accounts={accounts}
       incomeCategories={[{ id: SALARY, label: "Salary" }]}
       expenseCategories={[{ id: SHOPPING, label: "Shopping" }]}
@@ -66,9 +115,15 @@ function renderForm(
   );
 }
 
-const select = (label: string) => screen.getByLabelText(label, { exact: true, selector: "select" }) as HTMLSelectElement;
-const radio = (name: RegExp) => screen.getByRole("radio", { name }) as HTMLInputElement;
-const optionLabels = (label: string) => Array.from(select(label).options, (o) => o.text);
+const select = (label: string) =>
+  screen.getByLabelText(label, {
+    exact: true,
+    selector: "select",
+  }) as HTMLSelectElement;
+const radio = (name: RegExp) =>
+  screen.getByRole("radio", { name }) as HTMLInputElement;
+const optionLabels = (label: string) =>
+  Array.from(select(label).options, (o) => o.text);
 
 async function submit(button: RegExp, error: string) {
   await act(async () => {
@@ -77,7 +132,6 @@ async function submit(button: RegExp, error: string) {
   await screen.findByText(error);
 }
 
-/** What the last submission sent to the server. */
 const lastSubmitted = () => formEntries(action.mock.calls.at(-1)![1]);
 
 beforeEach(() => {
@@ -91,38 +145,59 @@ describe("TransactionForm after a refused submission", () => {
     renderForm({ initialSourceAccountId: CARD });
     expect(select("Paid from").value).toBe(CARD);
     fireEvent.change(select("Category"), { target: { value: SHOPPING } });
-    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1250.005" } });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "1250.005" },
+    });
 
     await submit(/Record expense/, "Use at most 2 decimal places for INR");
-    expect(lastSubmitted()).toMatchObject({ kind: "expense", sourceAccountId: CARD, expenseCategoryId: SHOPPING, amount: "1250.005" });
+    expect(lastSubmitted()).toMatchObject({
+      kind: "expense",
+      sourceAccountId: CARD,
+      expenseCategoryId: SHOPPING,
+      amount: "1250.005",
+    });
 
-    // The native reset after the action must not put the fields back to their first values.
     expect(radio(/^Expense/).checked).toBe(true);
     expect(select("Paid from").value).toBe(CARD);
     expect(select("Category").value).toBe(SHOPPING);
-    expect(screen.getByText("Paid by credit card: adds to the amount owed on the card.")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Paid by credit card: adds to the amount owed on the card.",
+      ),
+    ).toBeInTheDocument();
 
-    // A corrected resubmission sends the retained card and category.
-    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1250" } });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "1250" },
+    });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /Record expense/ }));
     });
     await waitFor(() => expect(action).toHaveBeenCalledTimes(2));
-    expect(lastSubmitted()).toMatchObject({ kind: "expense", sourceAccountId: CARD, expenseCategoryId: SHOPPING, amount: "1250" });
+    expect(lastSubmitted()).toMatchObject({
+      kind: "expense",
+      sourceAccountId: CARD,
+      expenseCategoryId: SHOPPING,
+      amount: "1250",
+    });
   });
 
   it("keeps a changed choice: what is shown is what was submitted", async () => {
     refuse("amount", "Enter an amount greater than zero, like 1250 or 1250.50");
     renderForm({ initialSourceAccountId: CARD });
     fireEvent.change(select("Paid from"), { target: { value: BANK } });
-    await submit(/Record expense/, "Enter an amount greater than zero, like 1250 or 1250.50");
+    await submit(
+      /Record expense/,
+      "Enter an amount greater than zero, like 1250 or 1250.50",
+    );
     expect(lastSubmitted()["sourceAccountId"]).toBe(BANK);
     expect(select("Paid from").value).toBe(BANK);
     expect(screen.queryByText(/Paid by credit card/)).not.toBeInTheDocument();
 
-    // Cleared, then refused again: still cleared, not back to the preselected card.
     fireEvent.change(select("Paid from"), { target: { value: "" } });
-    await submit(/Record expense/, "Enter an amount greater than zero, like 1250 or 1250.50");
+    await submit(
+      /Record expense/,
+      "Enter an amount greater than zero, like 1250 or 1250.50",
+    );
     expect(lastSubmitted()["sourceAccountId"]).toBe("");
     expect(select("Paid from").value).toBe("");
   });
@@ -133,8 +208,15 @@ describe("TransactionForm after a refused submission", () => {
     fireEvent.change(select("From account"), { target: { value: BANK } });
     fireEvent.change(select("To account"), { target: { value: WALLET } });
 
-    await submit(/Record transfer/, "Enter an amount greater than zero, like 1250 or 1250.50");
-    expect(lastSubmitted()).toMatchObject({ kind: "transfer", sourceAccountId: BANK, destinationAccountId: WALLET });
+    await submit(
+      /Record transfer/,
+      "Enter an amount greater than zero, like 1250 or 1250.50",
+    );
+    expect(lastSubmitted()).toMatchObject({
+      kind: "transfer",
+      sourceAccountId: BANK,
+      destinationAccountId: WALLET,
+    });
     expect(radio(/^Transfer/).checked).toBe(true);
     expect(radio(/^Expense/).checked).toBe(false);
     expect(select("From account").value).toBe(BANK);
@@ -148,10 +230,11 @@ describe("TransactionForm after a refused submission", () => {
     fireEvent.click(radio(/^Income/));
     fireEvent.change(select("Received into"), { target: { value: BANK } });
 
-    // The source is the same account, so a transfer cannot offer it as the destination.
     fireEvent.click(radio(/^Transfer/));
     expect(select("From account").value).toBe(BANK);
-    expect(optionLabels("To account")).not.toContain("Axis Savings (₹50,000.00)");
+    expect(optionLabels("To account")).not.toContain(
+      "Axis Savings (₹50,000.00)",
+    );
     expect(select("To account").value).toBe("");
 
     fireEvent.click(radio(/^Income/));
@@ -159,7 +242,10 @@ describe("TransactionForm after a refused submission", () => {
     expect(screen.getByText("Choose the account first.")).toBeInTheDocument();
 
     await submit(/Record income/, "Choose the account receiving the money");
-    expect(lastSubmitted()).toMatchObject({ kind: "income", destinationAccountId: "" });
+    expect(lastSubmitted()).toMatchObject({
+      kind: "income",
+      destinationAccountId: "",
+    });
     expect(radio(/^Income/).checked).toBe(true);
     expect(select("Received into").value).toBe("");
     expect(screen.getByText("Choose the account first.")).toBeInTheDocument();
@@ -171,7 +257,10 @@ describe("TransactionForm after a refused submission", () => {
     fireEvent.change(select("Received into"), { target: { value: WALLET } });
     fireEvent.change(select("Category"), { target: { value: SALARY } });
 
-    await submit(/Record income/, "Enter an amount greater than zero, like 1250 or 1250.50");
+    await submit(
+      /Record income/,
+      "Enter an amount greater than zero, like 1250 or 1250.50",
+    );
     expect(radio(/^Income/).checked).toBe(true);
     expect(select("Received into").value).toBe(WALLET);
     expect(select("Category").value).toBe(SALARY);
@@ -183,10 +272,16 @@ describe("TransactionForm card choices", () => {
     renderForm();
     expect(optionLabels("Paid from")).toContain("HDFC Card (Owed ₹12,000.00)");
     fireEvent.click(radio(/^Income/));
-    expect(optionLabels("Received into")).not.toContain("HDFC Card (Owed ₹12,000.00)");
+    expect(optionLabels("Received into")).not.toContain(
+      "HDFC Card (Owed ₹12,000.00)",
+    );
     fireEvent.click(radio(/^Transfer/));
-    expect(optionLabels("From account")).not.toContain("HDFC Card (Owed ₹12,000.00)");
-    expect(optionLabels("To account")).not.toContain("HDFC Card (Owed ₹12,000.00)");
+    expect(optionLabels("From account")).not.toContain(
+      "HDFC Card (Owed ₹12,000.00)",
+    );
+    expect(optionLabels("To account")).not.toContain(
+      "HDFC Card (Owed ₹12,000.00)",
+    );
   });
 
   it("clears a chosen card when the type changes away from expense, and does not bring it back", async () => {
@@ -195,7 +290,10 @@ describe("TransactionForm card choices", () => {
     fireEvent.click(radio(/^Transfer/));
     expect(select("From account").value).toBe("");
     await submit(/Record transfer/, "Choose the account receiving the money");
-    expect(lastSubmitted()).toMatchObject({ kind: "transfer", sourceAccountId: "" });
+    expect(lastSubmitted()).toMatchObject({
+      kind: "transfer",
+      sourceAccountId: "",
+    });
     expect(radio(/^Transfer/).checked).toBe(true);
     expect(select("From account").value).toBe("");
 
@@ -208,23 +306,44 @@ describe("TransactionForm card choices", () => {
 describe("TransactionForm card payments", () => {
   it("offers only bank and cash accounts to pay from, and only cards to be paid", () => {
     renderForm({ initialKind: "card_payment" });
-    expect(optionLabels("Paid from")).toEqual(["Choose an account", "Axis Savings (₹50,000.00)", "Wallet (₹0.00)"]);
-    expect(optionLabels("Card to pay")).toEqual(["Choose an account", "HDFC Card (Owed ₹12,000.00)", "Amex (Nothing owed (₹0.00))"]);
-    // No category and no payee: a card payment is neither income nor an expense.
+    expect(optionLabels("Paid from")).toEqual([
+      "Choose an account",
+      "Axis Savings (₹50,000.00)",
+      "Wallet (₹0.00)",
+    ]);
+    expect(optionLabels("Card to pay")).toEqual([
+      "Choose an account",
+      "HDFC Card (Owed ₹12,000.00)",
+      "Amex (Nothing owed (₹0.00))",
+    ]);
     expect(screen.queryByLabelText("Category")).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/^Paid to/)).not.toBeInTheDocument();
-    expect(screen.getByText("The payment reduces the amount owed on this card. It is not an expense.")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "The payment reduces the amount owed on this card. It is not an expense.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("preselects the card it was opened from and submits both sides", async () => {
     refuse("amount", "Enter an amount greater than zero, like 1250 or 1250.50");
-    renderForm({ initialKind: "card_payment", initialDestinationAccountId: CARD });
+    renderForm({
+      initialKind: "card_payment",
+      initialDestinationAccountId: CARD,
+    });
     expect(select("Card to pay").value).toBe(CARD);
     fireEvent.change(select("Paid from"), { target: { value: BANK } });
-    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "0" } });
-    fireEvent.change(screen.getByLabelText(/^Note/), { target: { value: "Oct statement" } });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "0" },
+    });
+    fireEvent.change(screen.getByLabelText(/^Note/), {
+      target: { value: "Oct statement" },
+    });
 
-    await submit(/Record card payment/, "Enter an amount greater than zero, like 1250 or 1250.50");
+    await submit(
+      /Record card payment/,
+      "Enter an amount greater than zero, like 1250 or 1250.50",
+    );
     expect(lastSubmitted()).toMatchObject({
       kind: "card_payment",
       sourceAccountId: BANK,
@@ -232,7 +351,6 @@ describe("TransactionForm card payments", () => {
       amount: "0",
       note: "Oct statement",
     });
-    // The refused submission keeps every value, both selects included.
     expect(radio(/^Card payment/).checked).toBe(true);
     expect(select("Paid from").value).toBe(BANK);
     expect(select("Card to pay").value).toBe(CARD);
@@ -246,12 +364,10 @@ describe("TransactionForm card payments", () => {
     fireEvent.change(select("From account"), { target: { value: BANK } });
     fireEvent.change(select("To account"), { target: { value: WALLET } });
 
-    // Switching to a card payment cannot keep a bank account as the destination.
     fireEvent.click(radio(/^Card payment/));
     expect(select("Card to pay").value).toBe("");
     expect(optionLabels("Card to pay")).not.toContain("Wallet (₹0.00)");
 
-    // And the card chosen here is dropped on the way back to a transfer.
     fireEvent.change(select("Card to pay"), { target: { value: CARD } });
     fireEvent.click(radio(/^Transfer/));
     expect(select("To account").value).toBe("");
@@ -260,7 +376,10 @@ describe("TransactionForm card payments", () => {
 
     fireEvent.click(radio(/^Card payment/));
     await submit(/Record card payment/, "Choose the account paying the card");
-    expect(lastSubmitted()).toMatchObject({ kind: "card_payment", destinationAccountId: "" });
+    expect(lastSubmitted()).toMatchObject({
+      kind: "card_payment",
+      destinationAccountId: "",
+    });
   });
 
   it("clears a card chosen as the paying account of an expense when switching to a card payment", () => {
@@ -268,16 +387,15 @@ describe("TransactionForm card payments", () => {
     expect(select("Paid from").value).toBe(CARD);
     fireEvent.click(radio(/^Card payment/));
     expect(select("Paid from").value).toBe("");
-    expect(optionLabels("Paid from")).not.toContain("HDFC Card (Owed ₹12,000.00)");
-    expect(screen.getByText("The bank or cash account the money comes from.")).toBeInTheDocument();
+    expect(optionLabels("Paid from")).not.toContain(
+      "HDFC Card (Owed ₹12,000.00)",
+    );
+    expect(
+      screen.getByText("The bank or cash account the money comes from."),
+    ).toBeInTheDocument();
   });
 });
 
-/**
- * Card refunds (ADR 0008, Milestone 5D). The form offers a refund either
- * against a purchase Finora recorded or as an unlinked merchant credit, and
- * never submits the fields of the mode that is not showing.
- */
 describe("TransactionForm: card refunds", () => {
   it("offers only credit cards, and only that card's refundable purchases", () => {
     renderForm({ initialKind: "card_refund" });
@@ -286,8 +404,9 @@ describe("TransactionForm: card refunds", () => {
       "HDFC Card (Owed ₹12,000.00)",
       "Amex (Nothing owed (₹0.00))",
     ]);
-    // No card chosen yet, so no purchase can be listed.
-    expect(optionLabels("Purchase being refunded")).toEqual(["Choose a purchase"]);
+    expect(optionLabels("Purchase being refunded")).toEqual([
+      "Choose a purchase",
+    ]);
     expect(screen.getByText("Choose the card first.")).toBeInTheDocument();
 
     fireEvent.change(select("Refunded to"), { target: { value: CARD } });
@@ -295,27 +414,46 @@ describe("TransactionForm: card refunds", () => {
       "Choose a purchase",
       "24 Oct 2026 · Shopping · Bata · ₹1,250.00 (₹1,250.00 left)",
     ]);
-    // The other card's purchase is never offered for this card.
     expect(optionLabels("Purchase being refunded")).not.toContain(
       "20 Oct 2026 · Health · Chemist · ₹400.00 (₹150.00 left)",
     );
   });
 
   it("names the category a linked refund will credit, and shows no category picker", () => {
-    renderForm({ initialKind: "card_refund", initialDestinationAccountId: CARD, initialPurchaseId: BATA });
+    renderForm({
+      initialKind: "card_refund",
+      initialDestinationAccountId: CARD,
+      initialPurchaseId: BATA,
+    });
     expect(select("Purchase being refunded").value).toBe(BATA);
-    expect(screen.getByText("The refund credits Shopping, the category this purchase was charged to.")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Category being refunded")).not.toBeInTheDocument();
     expect(
-      screen.getByText("The refund reduces the amount owed on this card and reduces your expenses. It is not income."),
+      screen.getByText(
+        "The refund credits Shopping, the category this purchase was charged to.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Category being refunded"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "The refund reduces the amount owed on this card and reduces your expenses. It is not income.",
+      ),
     ).toBeInTheDocument();
   });
 
   it("submits the purchase in linked mode and no category", async () => {
     refuse("amount", "Use at most 2 decimal places for INR");
-    renderForm({ initialKind: "card_refund", initialDestinationAccountId: CARD, initialPurchaseId: BATA });
-    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "250.005" } });
-    fireEvent.change(screen.getByLabelText("Refunded by (optional)"), { target: { value: "Bata" } });
+    renderForm({
+      initialKind: "card_refund",
+      initialDestinationAccountId: CARD,
+      initialPurchaseId: BATA,
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "250.005" },
+    });
+    fireEvent.change(screen.getByLabelText("Refunded by (optional)"), {
+      target: { value: "Bata" },
+    });
 
     await submit(/Record refund/, "Use at most 2 decimal places for INR");
     const sent = lastSubmitted();
@@ -326,37 +464,56 @@ describe("TransactionForm: card refunds", () => {
       refundsTransactionId: BATA,
       payee: "Bata",
     });
-    // No stale category travels with a linked refund.
     expect(sent["refundCategoryId"]).toBeUndefined();
-    // Everything entered survives the refusal.
     expect(radio(/^Card refund/).checked).toBe(true);
     expect(radio(/^A purchase recorded in Finora/).checked).toBe(true);
     expect(select("Refunded to").value).toBe(CARD);
     expect(select("Purchase being refunded").value).toBe(BATA);
-    expect((screen.getByLabelText("Amount") as HTMLInputElement).value).toBe("250.005");
-    expect((screen.getByLabelText("Refunded by (optional)") as HTMLInputElement).value).toBe("Bata");
+    expect((screen.getByLabelText("Amount") as HTMLInputElement).value).toBe(
+      "250.005",
+    );
+    expect(
+      (screen.getByLabelText("Refunded by (optional)") as HTMLInputElement)
+        .value,
+    ).toBe("Bata");
   });
 
   it("submits a category in unlinked mode and no purchase", async () => {
     refuse("amount", "Use at most 2 decimal places for INR");
-    renderForm({ initialKind: "card_refund", initialDestinationAccountId: CARD, initialPurchaseId: BATA });
+    renderForm({
+      initialKind: "card_refund",
+      initialDestinationAccountId: CARD,
+      initialPurchaseId: BATA,
+    });
     fireEvent.click(radio(/^A purchase not in Finora/));
-    // The purchase select is gone, the category select is there.
-    expect(screen.queryByLabelText("Purchase being refunded")).not.toBeInTheDocument();
-    fireEvent.change(select("Category being refunded"), { target: { value: SHOPPING } });
-    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "99.999" } });
+    expect(
+      screen.queryByLabelText("Purchase being refunded"),
+    ).not.toBeInTheDocument();
+    fireEvent.change(select("Category being refunded"), {
+      target: { value: SHOPPING },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "99.999" },
+    });
 
     await submit(/Record refund/, "Use at most 2 decimal places for INR");
     const sent = lastSubmitted();
-    expect(sent).toMatchObject({ kind: "card_refund", refundMode: "unlinked", refundCategoryId: SHOPPING });
-    // No stale purchase id travels with an unlinked refund.
+    expect(sent).toMatchObject({
+      kind: "card_refund",
+      refundMode: "unlinked",
+      refundCategoryId: SHOPPING,
+    });
     expect(sent["refundsTransactionId"]).toBeUndefined();
     expect(radio(/^A purchase not in Finora/).checked).toBe(true);
     expect(select("Category being refunded").value).toBe(SHOPPING);
   });
 
   it("drops a purchase that the newly chosen card cannot offer", () => {
-    renderForm({ initialKind: "card_refund", initialDestinationAccountId: CARD, initialPurchaseId: BATA });
+    renderForm({
+      initialKind: "card_refund",
+      initialDestinationAccountId: CARD,
+      initialPurchaseId: BATA,
+    });
     expect(select("Purchase being refunded").value).toBe(BATA);
     fireEvent.change(select("Refunded to"), { target: { value: AMEX } });
     expect(select("Purchase being refunded").value).toBe("");
@@ -369,24 +526,35 @@ describe("TransactionForm: card refunds", () => {
   it("says so when the chosen card has no purchase left to refund", () => {
     renderForm({ initialKind: "card_refund", purchases: [] });
     fireEvent.change(select("Refunded to"), { target: { value: CARD } });
-    expect(optionLabels("Purchase being refunded")).toEqual(["Choose a purchase"]);
+    expect(optionLabels("Purchase being refunded")).toEqual([
+      "Choose a purchase",
+    ]);
     expect(
-      screen.getByText("This card has no purchases left to refund. Record it as a purchase not in Finora instead."),
+      screen.getByText(
+        "This card has no purchases left to refund. Record it as a purchase not in Finora instead.",
+      ),
     ).toBeInTheDocument();
   });
 
   it("starts in linked mode, the preferred record when the purchase is in Finora", () => {
     renderForm({ initialKind: "card_refund" });
     expect(radio(/^A purchase recorded in Finora/).checked).toBe(true);
-    expect(screen.getByLabelText("Purchase being refunded")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Purchase being refunded"),
+    ).toBeInTheDocument();
   });
 
   it("drops the card and the purchase when switching to a kind that cannot use them", () => {
-    renderForm({ initialKind: "card_refund", initialDestinationAccountId: CARD, initialPurchaseId: BATA });
+    renderForm({
+      initialKind: "card_refund",
+      initialDestinationAccountId: CARD,
+      initialPurchaseId: BATA,
+    });
     fireEvent.click(radio(/^Income/));
-    // A card is never a receiving account, so the selection is cleared.
     expect(select("Received into").value).toBe("");
-    expect(screen.queryByLabelText("Purchase being refunded")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Purchase being refunded"),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(radio(/^Card refund/));
     expect(select("Refunded to").value).toBe("");
@@ -394,11 +562,13 @@ describe("TransactionForm: card refunds", () => {
   });
 
   it("keeps a card payment's card when switching to a refund, since both use cards", () => {
-    renderForm({ initialKind: "card_payment", initialDestinationAccountId: CARD });
+    renderForm({
+      initialKind: "card_payment",
+      initialDestinationAccountId: CARD,
+    });
     expect(select("Card to pay").value).toBe(CARD);
     fireEvent.click(radio(/^Card refund/));
     expect(select("Refunded to").value).toBe(CARD);
-    // There is no paying account for a refund: nothing pays it.
     expect(screen.queryByLabelText("Paid from")).not.toBeInTheDocument();
   });
 });

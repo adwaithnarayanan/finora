@@ -18,13 +18,14 @@ import {
   LedgerNotFoundError,
 } from "@/server/ledger/errors";
 
-import { adminClient, appPrisma, deleteOwners, seedOwner, type SeededOwner } from "./support/db";
+import {
+  adminClient,
+  appPrisma,
+  deleteOwners,
+  seedOwner,
+  type SeededOwner,
+} from "./support/db";
 import { authorize, ledgerFor, line, newKey } from "./support/ledger";
-
-/**
- * The ledger service end to end against real PostgreSQL, as finora_app, with
- * the production store and RLS scope.
- */
 
 const prisma = appPrisma();
 const ledger = ledgerFor(prisma);
@@ -52,10 +53,13 @@ async function counts() {
 
 async function balance(account: LedgerAccount) {
   const { balance } = await ledger.getAccountBalance(owner, account.id);
-  return balance.net.minor; // exact minor units; never compare money as floats
+  return balance.net.minor;
 }
 
-async function post(lines: ReturnType<typeof line>[], description = "Test entry") {
+async function post(
+  lines: ReturnType<typeof line>[],
+  description = "Test entry",
+) {
   const { entry } = await ledger.postEntry(owner, {
     entryDate: today,
     description,
@@ -88,39 +92,66 @@ afterAll(async () => {
 
 describe("ledger accounts", () => {
   it("creates owner-scoped accounts with an explicit currency", async () => {
-    expect(cash).toMatchObject({ name: "Cash", kind: "asset", currency: { code: "INR", exponent: 2 } });
+    expect(cash).toMatchObject({
+      name: "Cash",
+      kind: "asset",
+      currency: { code: "INR", exponent: 2 },
+    });
     expect(usdCash.currency).toEqual({ code: "USD", exponent: 2 });
-    const { rows } = await admin.query("SELECT owner_id::text FROM finora.ledger_accounts WHERE id = $1", [cash.id]);
+    const { rows } = await admin.query(
+      "SELECT owner_id::text FROM finora.ledger_accounts WHERE id = $1",
+      [cash.id],
+    );
     expect(rows[0].owner_id).toBe(seeded.ownerId);
   });
 
   it("rejects duplicate names, unknown currencies and kinds", async () => {
-    await expect(ledger.createAccount(owner, { name: "Cash", kind: "asset", currency: "INR" })).rejects.toThrow(
-      DuplicateLedgerAccountError,
-    );
-    await expect(ledger.createAccount(owner, { name: "Gold", kind: "asset", currency: "XAU" })).rejects.toThrow(
-      /Unsupported currency/,
-    );
-    await expect(ledger.createAccount(owner, { name: "Odd", kind: "contra", currency: "INR" })).rejects.toThrow(
-      /Account kind/,
-    );
+    await expect(
+      ledger.createAccount(owner, {
+        name: "Cash",
+        kind: "asset",
+        currency: "INR",
+      }),
+    ).rejects.toThrow(DuplicateLedgerAccountError);
+    await expect(
+      ledger.createAccount(owner, {
+        name: "Gold",
+        kind: "asset",
+        currency: "XAU",
+      }),
+    ).rejects.toThrow(/Unsupported currency/);
+    await expect(
+      ledger.createAccount(owner, {
+        name: "Odd",
+        kind: "contra",
+        currency: "INR",
+      }),
+    ).rejects.toThrow(/Account kind/);
   });
 });
 
 describe("posting", () => {
   it("posts a balanced entry atomically and reflects it in balances", async () => {
     const before = await balance(bank);
-    const entry = await post([line(bank.id, "debit", "50000.00"), line(salary.id, "credit", "50000")]);
+    const entry = await post([
+      line(bank.id, "debit", "50000.00"),
+      line(salary.id, "credit", "50000"),
+    ]);
     expect(entry.status).toBe("posted");
     expect(entry.postedAt).toBeInstanceOf(Date);
-    expect(entry.postedAt!.getTime()).toBeGreaterThanOrEqual(entry.createdAt.getTime());
+    expect(entry.postedAt!.getTime()).toBeGreaterThanOrEqual(
+      entry.createdAt.getTime(),
+    );
     expect(entry.lines.map((l) => [l.side, l.amount.minor])).toEqual([
       ["debit", 5_000_000n],
       ["credit", 5_000_000n],
     ]);
     expect((await balance(bank)) - before).toBe(5_000_000n);
-    const { balance: income } = await ledger.getAccountBalance(owner, salary.id);
-    expect(income.normal.isPositive()).toBe(true); // credit-normal
+    const { balance: income } = await ledger.getAccountBalance(
+      owner,
+      salary.id,
+    );
+    expect(income.normal.isPositive()).toBe(true);
   });
 
   it("posts multi-line, multi-currency entries that balance per currency", async () => {
@@ -140,18 +171,31 @@ describe("posting", () => {
       entryDate: today,
       description: "Unbalanced",
       idempotencyKey: newKey(),
-      lines: [line(bank.id, "debit", "100"), line(salary.id, "credit", "99.99")],
+      lines: [
+        line(bank.id, "debit", "100"),
+        line(salary.id, "credit", "99.99"),
+      ],
     });
     await expect(attempt).rejects.toThrow(LedgerValidationError);
     await expect(attempt).rejects.toMatchObject({
-      issues: [{ code: "unbalanced", currency: "INR", debits: "100.00", credits: "99.99" }],
+      issues: [
+        {
+          code: "unbalanced",
+          currency: "INR",
+          debits: "100.00",
+          credits: "99.99",
+        },
+      ],
     });
     expect(await counts()).toEqual(before);
   });
 
   it("rejects totals that balance overall but not per currency", async () => {
     await expect(
-      post([line(bank.id, "debit", "10"), line(usdIncome.id, "credit", "10", "USD")]),
+      post([
+        line(bank.id, "debit", "10"),
+        line(usdIncome.id, "credit", "10", "USD"),
+      ]),
     ).rejects.toMatchObject({
       issues: [
         { code: "unbalanced", currency: "INR" },
@@ -166,15 +210,24 @@ describe("posting", () => {
     ["excess precision", "1.005", "invalid-amount"],
     ["float syntax", "1e3", "invalid-amount"],
   ])("rejects a %s amount", async (_label, amount, code) => {
-    await expect(post([line(bank.id, "debit", amount), line(salary.id, "credit", amount)])).rejects.toMatchObject({
+    await expect(
+      post([line(bank.id, "debit", amount), line(salary.id, "credit", amount)]),
+    ).rejects.toMatchObject({
       issues: expect.arrayContaining([expect.objectContaining({ code })]),
     });
   });
 
   it("rejects a currency that does not match the account", async () => {
     await expect(
-      post([line(bank.id, "debit", "1", "USD"), line(salary.id, "credit", "1")]),
-    ).rejects.toMatchObject({ issues: [{ code: "currency-mismatch", line: 0, expected: "INR", actual: "USD" }] });
+      post([
+        line(bank.id, "debit", "1", "USD"),
+        line(salary.id, "credit", "1"),
+      ]),
+    ).rejects.toMatchObject({
+      issues: [
+        { code: "currency-mismatch", line: 0, expected: "INR", actual: "USD" },
+      ],
+    });
   });
 
   it("rejects unknown and malformed account ids alike", async () => {
@@ -192,12 +245,24 @@ describe("posting", () => {
   });
 
   it("rejects empty entries and invalid dates or descriptions", async () => {
-    await expect(post([])).rejects.toMatchObject({ issues: [{ code: "no-lines" }] });
+    await expect(post([])).rejects.toMatchObject({
+      issues: [{ code: "no-lines" }],
+    });
     await expect(
-      ledger.postEntry(owner, { entryDate: "2026-02-30", description: "x", idempotencyKey: newKey(), lines: [] }),
+      ledger.postEntry(owner, {
+        entryDate: "2026-02-30",
+        description: "x",
+        idempotencyKey: newKey(),
+        lines: [],
+      }),
     ).rejects.toThrow(/calendar date/);
     await expect(
-      ledger.postEntry(owner, { entryDate: today, description: "  ", idempotencyKey: newKey(), lines: [] }),
+      ledger.postEntry(owner, {
+        entryDate: today,
+        description: "  ",
+        idempotencyKey: newKey(),
+        lines: [],
+      }),
     ).rejects.toThrow(/Description/);
   });
 });
@@ -207,14 +272,17 @@ describe("idempotency", () => {
     entryDate: today,
     description: "Rent share",
     idempotencyKey: key,
-    lines: [line(groceries.id, "debit", amount), line(cash.id, "credit", amount)],
+    lines: [
+      line(groceries.id, "debit", amount),
+      line(cash.id, "credit", amount),
+    ],
   });
 
   it("replays an identical retry without a second accounting effect", async () => {
     const key = newKey("retry");
     const before = await balance(cash);
     const first = await ledger.postEntry(owner, request(key));
-    const second = await ledger.postEntry(owner, request(key, "250.00")); // same exact amount
+    const second = await ledger.postEntry(owner, request(key, "250.00"));
     expect(first.replayed).toBe(false);
     expect(second.replayed).toBe(true);
     expect(second.entry.id).toBe(first.entry.id);
@@ -229,15 +297,25 @@ describe("idempotency", () => {
   it("refuses a different request under a used key", async () => {
     const key = newKey("conflict");
     await ledger.postEntry(owner, request(key));
-    await expect(ledger.postEntry(owner, request(key, "251"))).rejects.toThrow(IdempotencyConflictError);
+    await expect(ledger.postEntry(owner, request(key, "251"))).rejects.toThrow(
+      IdempotencyConflictError,
+    );
     await expect(
       ledger.createDraft(owner, { ...request(key), idempotencyKey: key }),
     ).rejects.toThrow(IdempotencyConflictError);
   });
 
   it("rejects malformed keys before touching the database", async () => {
-    for (const key of ["", " spaced", "x".repeat(129), "semi;colon", "-leading"]) {
-      await expect(ledger.postEntry(owner, request(key))).rejects.toThrow(/Idempotency key/);
+    for (const key of [
+      "",
+      " spaced",
+      "x".repeat(129),
+      "semi;colon",
+      "-leading",
+    ]) {
+      await expect(ledger.postEntry(owner, request(key))).rejects.toThrow(
+        /Idempotency key/,
+      );
     }
   });
 
@@ -245,13 +323,24 @@ describe("idempotency", () => {
     const other = await seedOwner(admin);
     try {
       const otherOwner = await authorize(prisma, other.subject);
-      const otherCash = await ledger.createAccount(otherOwner, { name: "Cash", kind: "asset", currency: "INR" });
-      const otherIncome = await ledger.createAccount(otherOwner, { name: "Gifts", kind: "income", currency: "INR" });
+      const otherCash = await ledger.createAccount(otherOwner, {
+        name: "Cash",
+        kind: "asset",
+        currency: "INR",
+      });
+      const otherIncome = await ledger.createAccount(otherOwner, {
+        name: "Gifts",
+        kind: "income",
+        currency: "INR",
+      });
       const key = newKey("shared");
       const mine = await ledger.postEntry(owner, request(key));
       const theirs = await ledger.postEntry(otherOwner, {
         ...request(key),
-        lines: [line(otherCash.id, "debit", "250"), line(otherIncome.id, "credit", "250")],
+        lines: [
+          line(otherCash.id, "debit", "250"),
+          line(otherIncome.id, "credit", "250"),
+        ],
       });
       expect(theirs.replayed).toBe(false);
       expect(theirs.entry.id).not.toBe(mine.entry.id);
@@ -274,14 +363,22 @@ describe("drafts", () => {
     expect(await ledger.validateDraft(owner, draft.id)).toEqual([
       { code: "unbalanced", currency: "INR", debits: "75.00", credits: "0.00" },
     ]);
-    await expect(ledger.postDraft(owner, draft.id)).rejects.toThrow(LedgerValidationError);
+    await expect(ledger.postDraft(owner, draft.id)).rejects.toThrow(
+      LedgerValidationError,
+    );
 
-    await ledger.replaceDraftLines(owner, draft.id, [line(cash.id, "debit", "75"), line(bank.id, "credit", "75")]);
+    await ledger.replaceDraftLines(owner, draft.id, [
+      line(cash.id, "debit", "75"),
+      line(bank.id, "credit", "75"),
+    ]);
     expect(await ledger.validateDraft(owner, draft.id)).toEqual([]);
     expect(await balance(bank)).toBe(before);
 
     const posted = await ledger.postDraft(owner, draft.id);
-    expect(posted).toMatchObject({ replayed: false, entry: { status: "posted" } });
+    expect(posted).toMatchObject({
+      replayed: false,
+      entry: { status: "posted" },
+    });
     expect(before - (await balance(bank))).toBe(7_500n);
 
     const again = await ledger.postDraft(owner, draft.id);
@@ -290,20 +387,38 @@ describe("drafts", () => {
   });
 
   it("cannot edit or re-validate a posted entry's lines", async () => {
-    const entry = await post([line(cash.id, "debit", "1"), line(bank.id, "credit", "1")]);
+    const entry = await post([
+      line(cash.id, "debit", "1"),
+      line(bank.id, "credit", "1"),
+    ]);
     await expect(
-      ledger.replaceDraftLines(owner, entry.id, [line(cash.id, "debit", "2"), line(bank.id, "credit", "2")]),
+      ledger.replaceDraftLines(owner, entry.id, [
+        line(cash.id, "debit", "2"),
+        line(bank.id, "credit", "2"),
+      ]),
     ).rejects.toThrow(EntryNotDraftError);
-    await expect(ledger.validateDraft(owner, entry.id)).rejects.toThrow(EntryNotDraftError);
-    expect((await ledger.getEntry(owner, entry.id)).lines.map((l) => l.amount.minor)).toEqual([100n, 100n]);
+    await expect(ledger.validateDraft(owner, entry.id)).rejects.toThrow(
+      EntryNotDraftError,
+    );
+    expect(
+      (await ledger.getEntry(owner, entry.id)).lines.map((l) => l.amount.minor),
+    ).toEqual([100n, 100n]);
   });
 
   it("replays a draft created with a key", async () => {
     const key = newKey("draft");
-    const input = { entryDate: today, description: "Draft", idempotencyKey: key, lines: [line(cash.id, "debit", "5")] };
+    const input = {
+      entryDate: today,
+      description: "Draft",
+      idempotencyKey: key,
+      lines: [line(cash.id, "debit", "5")],
+    };
     const first = await ledger.createDraft(owner, input);
     const second = await ledger.createDraft(owner, input);
-    expect(second).toMatchObject({ replayed: true, entry: { id: first.entry.id } });
+    expect(second).toMatchObject({
+      replayed: true,
+      entry: { id: first.entry.id },
+    });
   });
 });
 
@@ -328,8 +443,6 @@ describe("atomicity", () => {
   });
 
   it("lets the database veto an unbalanced post even if domain checks are skipped", async () => {
-    // A store that silently drops the last line before writing: the domain saw
-    // a balanced entry, the database receives an unbalanced one.
     const buggy = ledgerFor(prisma, (store) => ({
       ...bindAll(store),
       replaceLines: (id, lines) => store.replaceLines(id, lines.slice(0, -1)),
@@ -342,7 +455,9 @@ describe("atomicity", () => {
       lines: [line(cash.id, "debit", "9"), line(bank.id, "credit", "9")],
     });
     await expect(attempt).rejects.toThrow(LedgerIntegrityError);
-    await expect(attempt).rejects.toMatchObject({ reason: "posted journal entry is unbalanced" });
+    await expect(attempt).rejects.toMatchObject({
+      reason: "posted journal entry is unbalanced",
+    });
     expect(await counts()).toEqual(before);
   });
 });
@@ -351,30 +466,42 @@ describe("reversal and correction", () => {
   let original: JournalEntry;
 
   beforeAll(async () => {
-    original = await post([line(groceries.id, "debit", "640"), line(card.id, "credit", "640")], "Groceries");
+    original = await post(
+      [line(groceries.id, "debit", "640"), line(card.id, "credit", "640")],
+      "Groceries",
+    );
   });
 
   it("reverses through a new, linked, posted entry and offsets the effect", async () => {
-    const before = { groceries: await balance(groceries), card: await balance(card) };
+    const before = {
+      groceries: await balance(groceries),
+      card: await balance(card),
+    };
     const key = newKey("reverse");
-    const { entry: reversal, replayed } = await ledger.reverseEntry(owner, original.id, {
-      entryDate: "2026-10-26",
-      description: "Reverse groceries",
-      idempotencyKey: key,
-    });
+    const { entry: reversal, replayed } = await ledger.reverseEntry(
+      owner,
+      original.id,
+      {
+        entryDate: "2026-10-26",
+        description: "Reverse groceries",
+        idempotencyKey: key,
+      },
+    );
     expect(replayed).toBe(false);
-    expect(reversal).toMatchObject({ status: "posted", reversesEntryId: original.id });
+    expect(reversal).toMatchObject({
+      status: "posted",
+      reversesEntryId: original.id,
+    });
     expect(offsetsExactly(original.lines, reversal.lines)).toBe(true);
 
     const refreshed = await ledger.getEntry(owner, original.id);
     expect(refreshed.reversedByEntryId).toBe(reversal.id);
-    expect(refreshed.lines).toEqual(original.lines); // history preserved
+    expect(refreshed.lines).toEqual(original.lines);
     expect(refreshed.postedAt).toEqual(original.postedAt);
 
     expect((await balance(groceries)) - before.groceries).toBe(-64_000n);
     expect((await balance(card)) - before.card).toBe(64_000n);
 
-    // Retry with the same key: same reversal, no new effect.
     const retry = await ledger.reverseEntry(owner, original.id, {
       entryDate: "2026-10-26",
       description: "Reverse groceries",
@@ -382,13 +509,19 @@ describe("reversal and correction", () => {
     });
     expect(retry).toMatchObject({ replayed: true, entry: { id: reversal.id } });
 
-    // Any other attempt: already reversed.
     await expect(
-      ledger.reverseEntry(owner, original.id, { entryDate: today, description: "Again", idempotencyKey: newKey() }),
+      ledger.reverseEntry(owner, original.id, {
+        entryDate: today,
+        description: "Again",
+        idempotencyKey: newKey(),
+      }),
     ).rejects.toThrow(EntryAlreadyReversedError);
-    // A reversal cannot itself be reversed.
     await expect(
-      ledger.reverseEntry(owner, reversal.id, { entryDate: today, description: "Undo", idempotencyKey: newKey() }),
+      ledger.reverseEntry(owner, reversal.id, {
+        entryDate: today,
+        description: "Undo",
+        idempotencyKey: newKey(),
+      }),
     ).rejects.toMatchObject({ reason: "is-reversal" });
   });
 
@@ -399,12 +532,19 @@ describe("reversal and correction", () => {
       lines: [line(cash.id, "debit", "1"), line(bank.id, "credit", "1")],
     });
     await expect(
-      ledger.reverseEntry(owner, draft.id, { entryDate: today, description: "No", idempotencyKey: newKey() }),
+      ledger.reverseEntry(owner, draft.id, {
+        entryDate: today,
+        description: "No",
+        idempotencyKey: newKey(),
+      }),
     ).rejects.toThrow(EntryNotReversibleError);
   });
 
   it("corrects atomically: reversal plus linked replacement", async () => {
-    const wrong = await post([line(groceries.id, "debit", "100"), line(cash.id, "credit", "100")], "Typo");
+    const wrong = await post(
+      [line(groceries.id, "debit", "100"), line(cash.id, "credit", "100")],
+      "Typo",
+    );
     const before = await balance(groceries);
     const key = newKey("correct");
     const input = {
@@ -414,7 +554,10 @@ describe("reversal and correction", () => {
       replacement: {
         entryDate: today,
         description: "Groceries (corrected)",
-        lines: [line(groceries.id, "debit", "10"), line(cash.id, "credit", "10")],
+        lines: [
+          line(groceries.id, "debit", "10"),
+          line(cash.id, "credit", "10"),
+        ],
       },
     };
     const result = await ledger.correctEntry(owner, wrong.id, input);
@@ -433,45 +576,72 @@ describe("reversal and correction", () => {
   });
 
   it("leaves nothing behind when the replacement is invalid", async () => {
-    const target = await post([line(groceries.id, "debit", "3"), line(cash.id, "credit", "3")]);
+    const target = await post([
+      line(groceries.id, "debit", "3"),
+      line(cash.id, "credit", "3"),
+    ]);
     const before = await counts();
     await expect(
       ledger.correctEntry(owner, target.id, {
         entryDate: today,
         description: "Bad correction",
         idempotencyKey: newKey(),
-        replacement: { entryDate: today, description: "Bad", lines: [line(groceries.id, "debit", "3")] },
+        replacement: {
+          entryDate: today,
+          description: "Bad",
+          lines: [line(groceries.id, "debit", "3")],
+        },
       }),
     ).rejects.toThrow(LedgerValidationError);
     expect(await counts()).toEqual(before);
-    expect((await ledger.getEntry(owner, target.id)).reversedByEntryId).toBeNull();
+    expect(
+      (await ledger.getEntry(owner, target.id)).reversedByEntryId,
+    ).toBeNull();
   });
 });
 
 describe("balances", () => {
   it("are exactly reconstructable from posted lines", async () => {
-    for (const account of [cash, bank, salary, groceries, card, usdCash, usdIncome]) {
+    for (const account of [
+      cash,
+      bank,
+      salary,
+      groceries,
+      card,
+      usdCash,
+      usdIncome,
+    ]) {
       const { rows } = await admin.query(
         `SELECT coalesce(sum(CASE l.side WHEN 'debit' THEN l.amount_minor ELSE -l.amount_minor END), 0)::text AS net
            FROM finora.journal_lines l JOIN finora.journal_entries e ON e.id = l.entry_id
           WHERE l.account_id = $1 AND e.status = 'posted'`,
         [account.id],
       );
-      const { balance: computed } = await ledger.getAccountBalance(owner, account.id);
+      const { balance: computed } = await ledger.getAccountBalance(
+        owner,
+        account.id,
+      );
       expect(computed.net.minor, account.name).toBe(BigInt(rows[0].net));
-      expect(computed.debits.subtract(computed.credits).equals(computed.net)).toBe(true);
+      expect(
+        computed.debits.subtract(computed.credits).equals(computed.net),
+      ).toBe(true);
     }
   });
 
   it("not found for unknown accounts and entries", async () => {
     const missing = "00000000-0000-4000-8000-000000000000";
-    await expect(ledger.getAccountBalance(owner, missing)).rejects.toThrow(LedgerNotFoundError);
-    await expect(ledger.getEntry(owner, missing)).rejects.toThrow(LedgerNotFoundError);
-    await expect(ledger.getEntry(owner, "garbage")).rejects.toThrow(/canonical lowercase UUID/);
+    await expect(ledger.getAccountBalance(owner, missing)).rejects.toThrow(
+      LedgerNotFoundError,
+    );
+    await expect(ledger.getEntry(owner, missing)).rejects.toThrow(
+      LedgerNotFoundError,
+    );
+    await expect(ledger.getEntry(owner, "garbage")).rejects.toThrow(
+      /canonical lowercase UUID/,
+    );
   });
 });
 
-/** Copies a store's methods so tests can override some of them. */
 function bindAll<T extends object>(store: T): T {
   const proto = Object.getPrototypeOf(store) as object;
   const out = {} as Record<string, unknown>;

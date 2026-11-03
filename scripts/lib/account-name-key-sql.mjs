@@ -1,21 +1,10 @@
-// Generates the SQL copy of the account-name key algorithm
-// (src/domain/finance/account-name.ts) that migration
-// 20261025000500_account_name_key embeds to backfill existing rows. Every
-// table is derived from the running Node's own toLowerCase()/trim(), so the
-// SQL reproduces this runtime's behaviour rather than PostgreSQL's lower().
-// A unit test regenerates it on the pinned Node and compares it with the
-// migration byte for byte; integration tests compare its results with
-// JavaScript on PostgreSQL. See ADR 0007.
-//
-//   node scripts/db/generate-account-name-key-sql.mjs   prints the block
-
-export const BEGIN_MARKER = "-- BEGIN GENERATED account_name_key (scripts/db/generate-account-name-key-sql.mjs)";
+export const BEGIN_MARKER =
+  "-- BEGIN GENERATED account_name_key (scripts/db/generate-account-name-key-sql.mjs)";
 export const END_MARKER = "-- END GENERATED account_name_key";
 
 const SIGMA = 0x3a3;
 const MAX_CODE_POINT = 0x10ffff;
 
-/** Every code point PostgreSQL text can hold: no NUL, no surrogates. */
 export function* textCodePoints() {
   for (let cp = 1; cp <= MAX_CODE_POINT; cp += 1) {
     if (cp < 0xd800 || cp > 0xdfff) yield cp;
@@ -51,7 +40,6 @@ export function caseTables() {
   return { lower, ignorable, cased, space };
 }
 
-/** Sorted code points as half-open ranges: [[first, last + 1], ...]. */
 export function toRanges(codePoints) {
   const ranges = [];
   for (const cp of codePoints) {
@@ -63,8 +51,11 @@ export function toRanges(codePoints) {
 }
 
 const hex = (cp) => cp.toString(16).toUpperCase().padStart(4, "0");
-/** JSON string with every non-ASCII code unit escaped, so the migration stays pure ASCII. */
-const asciiJson = (text) => JSON.stringify(text).replace(/[\u007f-\uffff]/g, (u) => `\\u${hex(u.charCodeAt(0))}`);
+const asciiJson = (text) =>
+  JSON.stringify(text).replace(
+    /[\u007f-\uffff]/g,
+    (u) => `\\u${hex(u.charCodeAt(0))}`,
+  );
 
 function wrap(items, indent, width = 100) {
   const lines = [];
@@ -81,16 +72,19 @@ function wrap(items, indent, width = 100) {
 }
 
 function multirangeLiteral(codePoints, indent) {
-  const items = toRanges(codePoints).map(([a, b], i, all) => `[${a},${b})${i < all.length - 1 ? "," : ""}`);
+  const items = toRanges(codePoints).map(
+    ([a, b], i, all) => `[${a},${b})${i < all.length - 1 ? "," : ""}`,
+  );
   return `'{\n${wrap(items, indent)}\n${indent.slice(2)}}'::int4multirange`;
 }
 
 function lowerMapLiteral(lower, indent) {
-  const entries = [...lower].map(([cp, s], i) => `"${cp}":${asciiJson(s)}${i < lower.size - 1 ? "," : ""}`);
+  const entries = [...lower].map(
+    ([cp, s], i) => `"${cp}":${asciiJson(s)}${i < lower.size - 1 ? "," : ""}`,
+  );
   return `'{\n${wrap(entries, indent)}\n${indent.slice(2)}}'::jsonb`;
 }
 
-/** The block between the markers in the migration, for the running Node. */
 export function accountNameKeySql(tables = caseTables()) {
   const header = [
     BEGIN_MARKER,
@@ -135,7 +129,6 @@ $fn$;
 ${END_MARKER}`;
 }
 
-/** The generated block as it appears in `sql` (markers included), or null. */
 export function extractGeneratedBlock(sql) {
   const start = sql.indexOf(BEGIN_MARKER);
   const end = sql.indexOf(END_MARKER);

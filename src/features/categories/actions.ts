@@ -10,44 +10,62 @@ import { toActionStateOrFallback } from "../shared/errors";
 import { runFormAction } from "../shared/form-action";
 import type { ActionState } from "../shared/form-state";
 
-export async function createCategoryAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+export async function createCategoryAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
   return runFormAction(formData, async (owner, input) => {
-    await finance.createCategory(owner, { name: input["name"], kind: input["kind"] });
+    await finance.createCategory(owner, {
+      name: input["name"],
+      kind: input["kind"],
+    });
     revalidatePath("/categories");
     return { message: `Added ${input["name"]?.trim()}.` };
   });
 }
 
-export async function renameCategoryAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+export async function renameCategoryAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
   return runFormAction(formData, async (owner, input) => {
-    await finance.renameCategory(owner, input["categoryId"] ?? "", { name: input["name"] });
+    await finance.renameCategory(owner, input["categoryId"] ?? "", {
+      name: input["name"],
+    });
     revalidatePath("/categories");
     return { message: "Renamed." };
   });
 }
 
-/**
- * Explicit setup of the default categories for the signed-in owner (a POST
- * from a button; never run while rendering a page). Idempotent. A failure is
- * shown next to the button without internal detail; it changes nothing,
- * because the setup is one transaction.
- */
-export async function initializeDefaultCategoriesAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+export async function initializeDefaultCategoriesAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
   const owner = await requireOwner();
   try {
     await finance.initializeDefaultCategories(owner);
   } catch (error) {
-    return toActionStateOrFallback(error, "The default categories could not be added, so nothing was changed. Try again.");
+    return toActionStateOrFallback(
+      error,
+      "The default categories could not be added, so nothing was changed. Try again.",
+    );
   }
   revalidatePath("/categories");
   revalidatePath("/transactions/new");
   // Outside the try: redirect() throws a control-flow exception.
-  if (formData.get("returnTo") === "/transactions/new") redirect("/transactions/new");
+  if (formData.get("returnTo") === "/transactions/new")
+    redirect("/transactions/new");
   return { message: "Default categories added." };
 }
 
-export async function setCategoryArchivedAction(formData: FormData): Promise<void> {
+export async function setCategoryArchivedAction(
+  formData: FormData,
+): Promise<void> {
   const owner = await requireOwner();
-  await finance.setCategoryArchived(owner, String(formData.get("categoryId") ?? ""), formData.get("archived") === "true");
+  await finance.setCategoryArchived(
+    owner,
+    String(formData.get("categoryId") ?? ""),
+    formData.get("archived") === "true",
+  );
   revalidatePath("/categories");
 }

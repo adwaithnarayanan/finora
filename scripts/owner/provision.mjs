@@ -1,21 +1,4 @@
 #!/usr/bin/env node
-// Provision Finora's owner (see scripts/lib/provisioning.mjs, ADR 0003 and
-// docs/runbooks/owner-access.md). Nothing here runs automatically on login.
-//
-// Email/password (current sign-in method):
-//   npm run owner:provision -- prepare      --email you@example.com [--local]
-//   npm run owner:provision -- set-password --email you@example.com [--local] [--password-stdin]
-//   npm run owner:provision -- complete     --email you@example.com [--local]
-//
-//   npm run owner:provision -- set-password ...   also rotates; ends all of the user's sessions
-//   npm run owner:provision -- relink --email new@example.com   keep owner id + data, new account
-//   npm run owner:provision -- cancel --email you@example.com   delete a prepared, unmapped user
-//   (prepare --relink / --allow-additional: see the runbook)
-//
-// The password is typed at a hidden prompt (twice) or piped with
-// --password-stdin. It is never accepted as an argument or environment
-// variable and never printed. Hosted: supply SUPABASE_URL, SUPABASE_SECRET_KEY
-// and MIGRATION_DATABASE_URL in the shell for this one command.
 import { parseArgs } from "node:util";
 
 import { createClient } from "@supabase/supabase-js";
@@ -54,17 +37,31 @@ async function readPassword() {
   const problem = passwordProblem(first);
   if (problem) throw new ProvisioningError(`Password rejected: ${problem}.`);
   const second = await promptHidden("Repeat the password: ");
-  if (first !== second) throw new ProvisioningError("The passwords did not match; nothing was changed.");
+  if (first !== second)
+    throw new ProvisioningError(
+      "The passwords did not match; nothing was changed.",
+    );
   return first;
 }
 
 function config() {
   if (values.local) {
     const local = readLocalSupabase();
-    return { supabaseUrl: local.apiUrl, secretKey: local.secretKey, databaseUrl: local.migrationDatabaseUrl.replace(/\?.*$/, "") };
+    return {
+      supabaseUrl: local.apiUrl,
+      secretKey: local.secretKey,
+      databaseUrl: local.migrationDatabaseUrl.replace(/\?.*$/, ""),
+    };
   }
-  const missing = ["SUPABASE_URL", "SUPABASE_SECRET_KEY", "MIGRATION_DATABASE_URL"].filter((name) => !process.env[name]);
-  if (missing.length > 0) throw new ProvisioningError(`Missing environment variables: ${missing.join(", ")}`);
+  const missing = [
+    "SUPABASE_URL",
+    "SUPABASE_SECRET_KEY",
+    "MIGRATION_DATABASE_URL",
+  ].filter((name) => !process.env[name]);
+  if (missing.length > 0)
+    throw new ProvisioningError(
+      `Missing environment variables: ${missing.join(", ")}`,
+    );
   return {
     supabaseUrl: process.env.SUPABASE_URL,
     secretKey: process.env.SUPABASE_SECRET_KEY,
@@ -87,33 +84,73 @@ async function main() {
   try {
     switch (command) {
       case "prepare": {
-        const purpose = values.relink ? "relink" : allowAdditional ? "additional-owner" : "new-owner";
+        const purpose = values.relink
+          ? "relink"
+          : allowAdditional
+            ? "additional-owner"
+            : "new-owner";
         const { created } = await prepare({ admin, db, email, purpose });
-        console.log(created ? "Prepared a passwordless user for that email." : "A user with that email already exists (unmapped).");
+        console.log(
+          created
+            ? "Prepared a passwordless user for that email."
+            : "A user with that email already exists (unmapped).",
+        );
         const flag = values.local ? " --local" : "";
-        console.log(`Next: npm run owner:provision -- set-password --email ${email}${flag}`);
-        console.log(`then: npm run owner:provision -- ${values.relink ? "relink" : "complete"} --email ${email}${flag}`);
+        console.log(
+          `Next: npm run owner:provision -- set-password --email ${email}${flag}`,
+        );
+        console.log(
+          `then: npm run owner:provision -- ${values.relink ? "relink" : "complete"} --email ${email}${flag}`,
+        );
         break;
       }
       case "set-password": {
         const password = await readPassword();
-        const { remainingSessions } = await setPassword({ admin, db, email, password });
-        console.log("Password set. All existing sessions for that user have ended.");
-        if (remainingSessions > 0) console.log(`Warning: ${remainingSessions} session(s) could not be removed.`);
+        const { remainingSessions } = await setPassword({
+          admin,
+          db,
+          email,
+          password,
+        });
+        console.log(
+          "Password set. All existing sessions for that user have ended.",
+        );
+        if (remainingSessions > 0)
+          console.log(
+            `Warning: ${remainingSessions} session(s) could not be removed.`,
+          );
         break;
       }
       case "complete": {
-        const { ownerId, created, approved } = await complete({ admin, db, email, allowAdditional });
+        const { ownerId, created, approved } = await complete({
+          admin,
+          db,
+          email,
+          allowAdditional,
+        });
         console.log(`Approved ${approved}.`);
-        console.log(created ? `Owner created: ${ownerId}` : `Already provisioned: ${ownerId}`);
+        console.log(
+          created
+            ? `Owner created: ${ownerId}`
+            : `Already provisioned: ${ownerId}`,
+        );
         console.log("The owner can now sign in.");
         break;
       }
       case "relink": {
-        const { ownerId, previousApprovalCleared, approved } = await relink({ admin, db, email });
-        console.log(`Owner ${ownerId} now uses ${approved}; its data is unchanged.`);
+        const { ownerId, previousApprovalCleared, approved } = await relink({
+          admin,
+          db,
+          email,
+        });
+        console.log(
+          `Owner ${ownerId} now uses ${approved}; its data is unchanged.`,
+        );
         console.log("The previous user no longer has access.");
-        if (!previousApprovalCleared) console.log("Warning: could not clear the previous user's approval; it is unmapped, so it still has no access. Delete it in the Supabase dashboard.");
+        if (!previousApprovalCleared)
+          console.log(
+            "Warning: could not clear the previous user's approval; it is unmapped, so it still has no access. Delete it in the Supabase dashboard.",
+          );
         break;
       }
       case "cancel": {
@@ -130,7 +167,10 @@ async function main() {
 try {
   await main();
 } catch (error) {
-  const message = error instanceof ProvisioningError || error instanceof Error ? error.message : "unknown error";
+  const message =
+    error instanceof ProvisioningError || error instanceof Error
+      ? error.message
+      : "unknown error";
   console.error(`Provisioning failed: ${message}`);
   process.exit(1);
 }

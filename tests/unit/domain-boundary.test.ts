@@ -1,10 +1,6 @@
 import { ESLint } from "eslint";
 import { describe, expect, it } from "vitest";
 
-/**
- * Lints in-memory source as if it lived in src/domain, using the real project
- * config, so no invalid file ever exists on disk.
- */
 const eslint = new ESLint({ cwd: process.cwd() });
 
 async function restrictedImportErrors(source: string, filePath: string) {
@@ -36,26 +32,34 @@ describe("domain import boundary", () => {
     'export { getServerEnv } from "@/server/env";',
     'const env = await import("@/server/env");',
     'const prisma = require("@prisma/client");',
-  ])("rejects %s", async (source) => {
-    const errors = await restrictedImportErrors(
-      `${source}\nexport {};\n`,
-      DOMAIN_FILE,
-    );
-    expect(errors.length).toBeGreaterThan(0);
-  }, 30_000);
+  ])(
+    "rejects %s",
+    async (source) => {
+      const errors = await restrictedImportErrors(
+        `${source}\nexport {};\n`,
+        DOMAIN_FILE,
+      );
+      expect(errors.length).toBeGreaterThan(0);
+    },
+    30_000,
+  );
 
   it.each([
     'import { Money } from "./money";',
     'import { Money } from "@/domain/money";',
     'import { Money } from "../domain/money";',
     'import { z } from "zod";',
-  ])("allows %s", async (source) => {
-    const errors = await restrictedImportErrors(
-      `${source}\nexport {};\n`,
-      DOMAIN_FILE,
-    );
-    expect(errors).toEqual([]);
-  }, 30_000);
+  ])(
+    "allows %s",
+    async (source) => {
+      const errors = await restrictedImportErrors(
+        `${source}\nexport {};\n`,
+        DOMAIN_FILE,
+      );
+      expect(errors).toEqual([]);
+    },
+    30_000,
+  );
 
   it("does not restrict code outside src/domain", async () => {
     const errors = await restrictedImportErrors(

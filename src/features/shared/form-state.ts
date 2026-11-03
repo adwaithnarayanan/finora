@@ -1,9 +1,7 @@
-/** Result of a form's server action, rendered by the form (useActionState). */
 export type ActionState = {
   readonly error?: string;
   readonly fieldErrors?: Readonly<Record<string, string>>;
   readonly message?: string;
-  /** Submitted values, echoed back so a rejected form keeps what was typed. */
   readonly values?: Readonly<Record<string, string>>;
 };
 

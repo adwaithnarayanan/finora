@@ -7,24 +7,34 @@ import pg from "pg";
 
 import { readLocalSupabase } from "../../../scripts/lib/local-supabase.mjs";
 import { unlinkOwners } from "../../../scripts/lib/owners.mjs";
-import { cancel, complete, prepare, setPassword } from "../../../scripts/lib/provisioning.mjs";
+import {
+  cancel,
+  complete,
+  prepare,
+  setPassword,
+} from "../../../scripts/lib/provisioning.mjs";
 
 import { purgeOwnerData } from "../../support/purge";
 
 import { EXTRA_OWNERS_FILE, type ProvisionedOwner } from "./fixtures";
 
-type Context = { admin: ReturnType<typeof createClient>["auth"]["admin"]; db: pg.Client };
+type Context = {
+  admin: ReturnType<typeof createClient>["auth"]["admin"];
+  db: pg.Client;
+};
 
-const email = (label: string) => `e2e-${label}-${randomUUID().slice(0, 8)}@finora.test`;
+const email = (label: string) =>
+  `e2e-${label}-${randomUUID().slice(0, 8)}@finora.test`;
 const password = () => `E2e-${randomUUID()}-Aa1`;
 
-/** Runs `fn` with the LOCAL stack's admin Auth client and a privileged connection. */
 async function withLocal<T>(fn: (ctx: Context) => Promise<T>): Promise<T> {
   const local = readLocalSupabase();
   const admin = createClient(local.apiUrl, local.secretKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   }).auth.admin;
-  const db = new pg.Client({ connectionString: local.migrationDatabaseUrl.replace(/\?.*$/, "") });
+  const db = new pg.Client({
+    connectionString: local.migrationDatabaseUrl.replace(/\?.*$/, ""),
+  });
   await db.connect();
   try {
     return await fn({ admin, db });
@@ -33,17 +43,23 @@ async function withLocal<T>(fn: (ctx: Context) => Promise<T>): Promise<T> {
   }
 }
 
-/**
- * A new LOCAL owner through the real provisioning workflow: prepare ->
- * set-password -> complete. If a later step fails, the prepared (unmapped)
- * user is removed again.
- */
-export async function provisionOwner(ctx: Context, label: string): Promise<ProvisionedOwner> {
+export async function provisionOwner(
+  ctx: Context,
+  label: string,
+): Promise<ProvisionedOwner> {
   const user = { email: email(label), password: password() };
-  const { userId } = await prepare({ ...ctx, email: user.email, purpose: "additional-owner" });
+  const { userId } = await prepare({
+    ...ctx,
+    email: user.email,
+    purpose: "additional-owner",
+  });
   try {
     await setPassword({ ...ctx, email: user.email, password: user.password });
-    const { ownerId } = await complete({ ...ctx, email: user.email, allowAdditional: true });
+    const { ownerId } = await complete({
+      ...ctx,
+      email: user.email,
+      allowAdditional: true,
+    });
     return { ...user, userId, ownerId: ownerId as string };
   } catch (error) {
     await cancel({ ...ctx, email: user.email }).catch(() => {});
@@ -51,27 +67,22 @@ export async function provisionOwner(ctx: Context, label: string): Promise<Provi
   }
 }
 
-/**
- * A brand-new owner for one test attempt (a retry gets another one), so a
- * test never depends on what earlier tests or attempts left behind. The test
- * removes it with removeTestUsers; it is also recorded in EXTRA_OWNERS_FILE
- * so global teardown still removes it if that cleanup never ran.
- */
-export async function provisionTestOwner(label: string): Promise<ProvisionedOwner> {
+export async function provisionTestOwner(
+  label: string,
+): Promise<ProvisionedOwner> {
   return withLocal(async (ctx) => {
     const owner = await provisionOwner(ctx, label);
     mkdirSync(path.dirname(EXTRA_OWNERS_FILE), { recursive: true });
-    appendFileSync(EXTRA_OWNERS_FILE, `${JSON.stringify(owner)}\n`, { mode: 0o600 });
+    appendFileSync(EXTRA_OWNERS_FILE, `${JSON.stringify(owner)}\n`, {
+      mode: 0o600,
+    });
     return owner;
   });
 }
 
-/**
- * Removes exactly these LOCAL users: their owners' financial and ledger rows,
- * the owner mappings, then the Auth users. Repeating it is harmless: rows and
- * users that are already gone are skipped.
- */
-export async function removeTestUsers(users: readonly { userId: string; ownerId?: string }[]): Promise<void> {
+export async function removeTestUsers(
+  users: readonly { userId: string; ownerId?: string }[],
+): Promise<void> {
   if (users.length === 0) return;
   await withLocal(async ({ admin, db }) => {
     const ownerIds = users.flatMap((u) => (u.ownerId ? [u.ownerId] : []));
@@ -80,8 +91,10 @@ export async function removeTestUsers(users: readonly { userId: string; ownerId?
     const failures: string[] = [];
     for (const { userId } of users) {
       const { error } = await admin.deleteUser(userId);
-      if (error && error.code !== "user_not_found") failures.push(`${userId}: ${error.code ?? error.status}`);
+      if (error && error.code !== "user_not_found")
+        failures.push(`${userId}: ${error.code ?? error.status}`);
     }
-    if (failures.length > 0) throw new Error(`could not delete test users: ${failures.join(", ")}`);
+    if (failures.length > 0)
+      throw new Error(`could not delete test users: ${failures.join(", ")}`);
   });
 }

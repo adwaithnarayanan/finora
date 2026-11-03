@@ -19,7 +19,10 @@ const CURRENCIES = Object.values(KNOWN_CURRENCIES).map((c) => ({
 export default function NewAccountPage() {
   return (
     <div className="max-w-2xl">
-      <PageHeader title="New account" description="A bank account, cash or a credit card you want to track." />
+      <PageHeader
+        title="New account"
+        description="A bank account, cash or a credit card you want to track."
+      />
       <Suspense fallback={<PageLoading />}>
         <NewAccount />
       </Suspense>
@@ -29,6 +32,11 @@ export default function NewAccountPage() {
 
 async function NewAccount() {
   await requireOwner();
-  // One key per rendered form: a double submit or retry cannot create two accounts.
-  return <CreateAccountForm idempotencyKey={randomUUID()} today={todayInIndia()} currencies={CURRENCIES} />;
+  return (
+    <CreateAccountForm
+      idempotencyKey={randomUUID()}
+      today={todayInIndia()}
+      currencies={CURRENCIES}
+    />
+  );
 }

@@ -1,14 +1,6 @@
-// Connection details for the LOCAL Supabase stack, read from `supabase status`.
-// Used by db scripts, integration tests and e2e tests so that none of them read
-// .env files or can be pointed at a hosted database by accident.
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 
-/**
- * Local-only password for the finora_app role. The local stack binds to
- * loopback and already uses Supabase's well-known postgres/postgres default;
- * this is not a credential for any hosted environment.
- */
 export const LOCAL_APP_DB_PASSWORD = "finora-local-dev-only";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
@@ -21,7 +13,9 @@ export function assertLoopback(url, label) {
     throw new Error(`${label} is not a valid URL`);
   }
   if (!LOOPBACK_HOSTS.has(hostname)) {
-    throw new Error(`${label} must point at a local (loopback) host; refusing to continue`);
+    throw new Error(
+      `${label} must point at a local (loopback) host; refusing to continue`,
+    );
   }
 }
 
@@ -35,7 +29,9 @@ export function readLocalSupabase(projectRoot = process.cwd()) {
       stdio: ["ignore", "pipe", "ignore"],
     });
   } catch {
-    throw new Error("Local Supabase is not running. Start it with `npx supabase start`.");
+    throw new Error(
+      "Local Supabase is not running. Start it with `npx supabase start`.",
+    );
   }
   const status = JSON.parse(raw);
   for (const key of ["API_URL", "DB_URL", "PUBLISHABLE_KEY", "SECRET_KEY"]) {
@@ -56,14 +52,11 @@ export function readLocalSupabase(projectRoot = process.cwd()) {
     publishableKey: status.PUBLISHABLE_KEY,
     secretKey: status.SECRET_KEY,
     mailpitUrl: status.MAILPIT_URL ?? status.INBUCKET_URL,
-    /** Privileged (postgres) URL; migrations and test fixtures only. */
     migrationDatabaseUrl: migrationUrl.toString(),
-    /** Restricted runtime URL (finora_app). */
     appDatabaseUrl: appUrl.toString(),
   };
 }
 
-/** Environment for running the app against the local stack. */
 export function localAppEnv(local, siteUrl) {
   return {
     NEXT_PUBLIC_SITE_URL: siteUrl,

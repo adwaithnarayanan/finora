@@ -21,7 +21,10 @@ afterAll(async () => {
 describe("runtime role (finora_app)", () => {
   it("is the role the app connection actually uses", async () => {
     const { rows } = await app.query("SELECT current_user, session_user");
-    expect(rows[0]).toEqual({ current_user: "finora_app", session_user: "finora_app" });
+    expect(rows[0]).toEqual({
+      current_user: "finora_app",
+      session_user: "finora_app",
+    });
   });
 
   it("has no superuser, BYPASSRLS, role-creation or replication rights", async () => {
@@ -63,22 +66,37 @@ describe("runtime role (finora_app)", () => {
   });
 
   it("cannot create objects or write identity tables", async () => {
-    await expect(app.query("CREATE TABLE finora.evil (id int)")).rejects.toThrow(/permission denied/);
-    await expect(app.query("CREATE TABLE public.evil (id int)")).rejects.toThrow(/permission denied/);
-    await expect(app.query("INSERT INTO finora.owners DEFAULT VALUES")).rejects.toThrow(/permission denied/);
-    await expect(app.query("UPDATE finora.owners SET disabled_at = now()")).rejects.toThrow(/permission denied/);
-    await expect(app.query("DELETE FROM finora.owner_identities")).rejects.toThrow(/permission denied/);
-    await expect(app.query("SELECT * FROM finora._prisma_migrations")).rejects.toThrow(/permission denied/);
+    await expect(
+      app.query("CREATE TABLE finora.evil (id int)"),
+    ).rejects.toThrow(/permission denied/);
+    await expect(
+      app.query("CREATE TABLE public.evil (id int)"),
+    ).rejects.toThrow(/permission denied/);
+    await expect(
+      app.query("INSERT INTO finora.owners DEFAULT VALUES"),
+    ).rejects.toThrow(/permission denied/);
+    await expect(
+      app.query("UPDATE finora.owners SET disabled_at = now()"),
+    ).rejects.toThrow(/permission denied/);
+    await expect(
+      app.query("DELETE FROM finora.owner_identities"),
+    ).rejects.toThrow(/permission denied/);
+    await expect(
+      app.query("SELECT * FROM finora._prisma_migrations"),
+    ).rejects.toThrow(/permission denied/);
   });
 
   it("cannot read Supabase's auth schema", async () => {
-    await expect(app.query("SELECT id FROM auth.users LIMIT 1")).rejects.toThrow(/permission denied/);
+    await expect(
+      app.query("SELECT id FROM auth.users LIMIT 1"),
+    ).rejects.toThrow(/permission denied/);
   });
 
   it("cannot turn off RLS for its own session", async () => {
     await expect(app.query("SET row_security = off")).resolves.toBeDefined();
-    // With row_security off, a query that RLS would filter must error rather than bypass.
-    await expect(app.query("SELECT * FROM finora.owners")).rejects.toThrow(/row-level security/);
+    await expect(app.query("SELECT * FROM finora.owners")).rejects.toThrow(
+      /row-level security/,
+    );
     await app.query("RESET row_security");
   });
 });
@@ -94,7 +112,12 @@ describe("Supabase API roles", () => {
                 has_table_privilege($1, 'finora._prisma_migrations', 'SELECT') AS migrations`,
         [role],
       );
-      expect(rows[0]).toEqual({ usage: false, owners: false, identities: false, migrations: false });
+      expect(rows[0]).toEqual({
+        usage: false,
+        owners: false,
+        identities: false,
+        migrations: false,
+      });
     },
   );
 
@@ -102,7 +125,9 @@ describe("Supabase API roles", () => {
     await admin.query("BEGIN");
     try {
       await admin.query("SET LOCAL ROLE anon");
-      await expect(admin.query("SELECT * FROM finora.owners")).rejects.toThrow(/permission denied/);
+      await expect(admin.query("SELECT * FROM finora.owners")).rejects.toThrow(
+        /permission denied/,
+      );
     } finally {
       await admin.query("ROLLBACK");
     }
@@ -151,7 +176,9 @@ describe("schema-wide guards (keep passing as tables are added)", () => {
             SELECT table_name, privilege_type FROM information_schema.role_table_grants
              WHERE table_schema = 'finora' AND grantee = 'finora_app')`,
     );
-    expect(rows.map((r) => `${r.table_name}:${r.privilege_type}`).sort()).toEqual([
+    expect(
+      rows.map((r) => `${r.table_name}:${r.privilege_type}`).sort(),
+    ).toEqual([
       "categories.archived_at:UPDATE",
       "categories.name:UPDATE",
       "categories:INSERT",
@@ -172,7 +199,6 @@ describe("schema-wide guards (keep passing as tables are added)", () => {
       "journal_lines:DELETE",
       "journal_lines:INSERT",
       "journal_lines:SELECT",
-      // Milestone 4B: unused accounts only (foreign keys restrict the rest).
       "ledger_accounts:DELETE",
       "ledger_accounts:INSERT",
       "ledger_accounts:SELECT",
@@ -225,13 +251,12 @@ describe("schema-wide guards (keep passing as tables are added)", () => {
          JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'owner_id' AND NOT a.attisdropped
         WHERE c.relnamespace = 'finora'::regnamespace AND p.polname <> 'owner_isolation'`,
     );
-    expect(rows).toEqual([{ relname: "owner_identities", polname: "identity_resolution" }]);
+    expect(rows).toEqual([
+      { relname: "owner_identities", polname: "identity_resolution" },
+    ]);
   });
 
   it("keeps every foreign key between owner-scoped tables within one owner", async () => {
-    // A key from one owner_id table to another must carry owner_id on both
-    // sides at the same position, so a row can never reference another
-    // owner's row. References to `owners` itself must be on owner_id.
     const { rows } = await admin.query(
       `SELECT con.conname,
               array(SELECT attname::text FROM unnest(con.conkey) WITH ORDINALITY k(n, i)
@@ -250,8 +275,9 @@ describe("schema-wide guards (keep passing as tables are added)", () => {
     );
     const scoped = new Set(ownerScoped.rows.map((r) => r.name));
     const violations = rows.filter((fk) => {
-      if (fk.target === "finora.owners") return !(fk.cols.length === 1 && fk.cols[0] === "owner_id");
-      if (!scoped.has(fk.target)) return false; // reference data such as currencies
+      if (fk.target === "finora.owners")
+        return !(fk.cols.length === 1 && fk.cols[0] === "owner_id");
+      if (!scoped.has(fk.target)) return false;
       const i = fk.cols.indexOf("owner_id");
       return i === -1 || fk.ref_cols[i] !== "owner_id";
     });
@@ -260,10 +286,6 @@ describe("schema-wide guards (keep passing as tables are added)", () => {
   });
 
   it("includes owner_id in every unique index on owner-scoped tables (no cross-owner existence oracle)", async () => {
-    // Unique indexes are checked without RLS, so a violation would reveal that
-    // another owner's value exists. Primary keys are server-generated UUIDs.
-    // owner_identities is exempt: (provider, subject) is globally unique by
-    // design and finora_app cannot write that table.
     const { rows } = await admin.query(
       `SELECT c.relname, i.relname AS index
          FROM pg_index x JOIN pg_class c ON c.oid = x.indrelid JOIN pg_class i ON i.oid = x.indexrelid
@@ -280,7 +302,8 @@ describe("schema-wide guards (keep passing as tables are added)", () => {
       `SELECT p.proname, p.prosecdef, coalesce(array_to_string(p.proconfig, ','), '') AS config
          FROM pg_proc p WHERE p.pronamespace = 'finora'::regnamespace ORDER BY 1`,
     );
-    for (const row of rows) expect(row.config, row.proname).toContain("search_path=");
+    for (const row of rows)
+      expect(row.config, row.proname).toContain("search_path=");
     expect(rows.filter((r) => r.prosecdef).map((r) => r.proname)).toEqual([
       "financial_accounts_guard",
       "journal_entries_validate",
@@ -293,7 +316,9 @@ describe("schema-wide guards (keep passing as tables are added)", () => {
   });
 
   it("stores the same currencies (code and exponent) as the money module knows", async () => {
-    const { rows } = await admin.query("SELECT code, exponent FROM finora.currencies ORDER BY code");
+    const { rows } = await admin.query(
+      "SELECT code, exponent FROM finora.currencies ORDER BY code",
+    );
     const known = Object.values(KNOWN_CURRENCIES)
       .map((c) => ({ code: c.code, exponent: c.exponent }))
       .sort((x, y) => x.code.localeCompare(y.code));

@@ -6,28 +6,30 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { AuthorizedOwner } from "@/server/auth/types";
 import { IdempotencyConflictError } from "@/server/ledger/errors";
 
-import { lines, entryAccounts, counts, dataSnapshot, functionCatalog, triggerCatalog, constraintCatalog, migrationRows } from "./support/catalog";
+import {
+  lines,
+  entryAccounts,
+  counts,
+  dataSnapshot,
+  functionCatalog,
+  triggerCatalog,
+  constraintCatalog,
+  migrationRows,
+} from "./support/catalog";
 import { asOwner, authorize, financeFor, ledgerFor } from "./support/ledger";
 import { historyOn } from "./support/pre-migration";
 import { type ScratchDatabase, deployMigrations } from "./support/scratch-db";
 import { newOwner, scratchHarness } from "./support/scratch-harness";
 
-/**
- * Milestone 5C (ADR 0008): card payments, that is, repayments of a credit
- * card from a bank or cash account. Migrations
- * 20261026000000_card_payment_kind and 20261026000100_card_payments, and the
- * service and COMMIT-time rules they enable, on scratch databases that this
- * file creates and drops. Nothing here touches the local database's own data.
- */
-
 const CARD_PAYMENT_KIND = "20261026000000_card_payment_kind";
 const CARD_PAYMENTS = "20261026000100_card_payments";
 const BEFORE = "20261025000800_card_expenses";
 const today = "2026-10-25";
-/** The COMMIT-time refusal for a card payment with the wrong account classes. */
-const WRONG_CLASSES = /a card payment pays a credit card from a bank or cash account/;
+const WRONG_CLASSES =
+  /a card payment pays a credit card from a bank or cash account/;
 
-const { scratchDatabase, financeOn, appClientOn, deployThrough } = scratchHarness();
+const { scratchDatabase, financeOn, appClientOn, deployThrough } =
+  scratchHarness();
 
 describe("migrations 20261026000000_card_payment_kind and 20261026000100_card_payments", () => {
   it("add a kind and a rule without changing a row, a trigger or any other rule, and then accept card payments", async () => {
@@ -37,27 +39,80 @@ describe("migrations 20261026000000_card_payment_kind and 20261026000100_card_pa
     const { prisma, finance } = financeOn(scratch);
     const { seeded, owner, named } = await newOwner(db, finance, prisma);
 
-    // Representative 5B history: a bank account, a card, their opening
-    // balances, income, a card expense, an ordinary expense and a void. The
-    // accounts go through the service, but the transactions cannot: the
-    // finance store reads and writes columns that migrations after 5C add
-    // (see historyOn).
-    const bank = (await finance.createAccount(owner, { name: "Axis", type: "bank", idempotencyKey: randomUUID() })).value;
-    const card = (await finance.createAccount(owner, { name: "HDFC Card", type: "credit_card", idempotencyKey: randomUUID() })).value;
-    const history = historyOn({ db, ledger: ledgerFor(prisma), owner, ownerId: seeded.ownerId, date: today });
+    const bank = (
+      await finance.createAccount(owner, {
+        name: "Axis",
+        type: "bank",
+        idempotencyKey: randomUUID(),
+      })
+    ).value;
+    const card = (
+      await finance.createAccount(owner, {
+        name: "HDFC Card",
+        type: "credit_card",
+        idempotencyKey: randomUUID(),
+      })
+    ).value;
+    const history = historyOn({
+      db,
+      ledger: ledgerFor(prisma),
+      owner,
+      ownerId: seeded.ownerId,
+      date: today,
+    });
     const equity = await history.openingEquity();
-    const salaryLedger = await history.mapCategory(named("Salary").id, "income");
-    const shoppingLedger = await history.mapCategory(named("Shopping").id, "expense");
-    const groceriesLedger = await history.mapCategory(named("Groceries").id, "expense");
-    await history.record({ kind: "opening_balance", amount: "50000", debit: bank.ledgerAccountId, credit: equity, destination: bank.id });
-    await history.record({ kind: "opening_balance", amount: "12000", debit: equity, credit: card.ledgerAccountId, destination: card.id });
-    await history.record({ kind: "income", amount: "1000", debit: bank.ledgerAccountId, credit: salaryLedger, destination: bank.id, category: named("Salary").id });
-    await history.record({ kind: "expense", amount: "1250", debit: shoppingLedger, credit: card.ledgerAccountId, source: card.id, category: named("Shopping").id });
-    const spent = await history.record({ kind: "expense", amount: "250", debit: groceriesLedger, credit: bank.ledgerAccountId, source: bank.id, category: named("Groceries").id });
+    const salaryLedger = await history.mapCategory(
+      named("Salary").id,
+      "income",
+    );
+    const shoppingLedger = await history.mapCategory(
+      named("Shopping").id,
+      "expense",
+    );
+    const groceriesLedger = await history.mapCategory(
+      named("Groceries").id,
+      "expense",
+    );
+    await history.record({
+      kind: "opening_balance",
+      amount: "50000",
+      debit: bank.ledgerAccountId,
+      credit: equity,
+      destination: bank.id,
+    });
+    await history.record({
+      kind: "opening_balance",
+      amount: "12000",
+      debit: equity,
+      credit: card.ledgerAccountId,
+      destination: card.id,
+    });
+    await history.record({
+      kind: "income",
+      amount: "1000",
+      debit: bank.ledgerAccountId,
+      credit: salaryLedger,
+      destination: bank.id,
+      category: named("Salary").id,
+    });
+    await history.record({
+      kind: "expense",
+      amount: "1250",
+      debit: shoppingLedger,
+      credit: card.ledgerAccountId,
+      source: card.id,
+      category: named("Shopping").id,
+    });
+    const spent = await history.record({
+      kind: "expense",
+      amount: "250",
+      debit: groceriesLedger,
+      credit: bank.ledgerAccountId,
+      source: bank.id,
+      category: named("Groceries").id,
+    });
     await history.void(spent);
 
-    // Before the migrations the kind does not exist at all, so not even raw
-    // SQL can record one.
     await expect(
       asOwner(app, seeded.ownerId, () =>
         app.query(
@@ -72,47 +127,68 @@ describe("migrations 20261026000000_card_payment_kind and 20261026000100_card_pa
     const functionsBefore = await functionCatalog(db);
     const triggersBefore = await triggerCatalog(db);
     const constraintsBefore = await constraintCatalog(db);
-    const shapeBefore = constraintsBefore.find((c) => c.conname === "transactions_shape")!;
+    const shapeBefore = constraintsBefore.find(
+      (c) => c.conname === "transactions_shape",
+    )!;
     expect(shapeBefore.def).not.toMatch(/card_payment/);
 
-    // The real project migrations, as on a deployment, but stopping at 5C:
-    // this test's subject is those two files, and later milestones change the
-    // catalogs compared below.
     deployThrough(scratch, CARD_PAYMENTS);
 
-    expect(await migrationRows(db, CARD_PAYMENT_KIND)).toEqual([{ finished: true, rolled_back: false }]);
-    expect(await migrationRows(db, CARD_PAYMENTS)).toEqual([{ finished: true, rolled_back: false }]);
-    // No row is written or rewritten, and no trigger is added, removed or rewired.
+    expect(await migrationRows(db, CARD_PAYMENT_KIND)).toEqual([
+      { finished: true, rolled_back: false },
+    ]);
+    expect(await migrationRows(db, CARD_PAYMENTS)).toEqual([
+      { finished: true, rolled_back: false },
+    ]);
     expect(await dataSnapshot(db)).toEqual(before);
     expect(await triggerCatalog(db)).toEqual(triggersBefore);
-    // Same functions with the same attributes, owner and privileges; only
-    // assert_transaction_valid's body differs.
     const functionsAfter = await functionCatalog(db);
-    const withoutBody = (rows: { proname: string; body: string }[]) => rows.map((row) => ({ ...row, body: undefined }));
+    const withoutBody = (rows: { proname: string; body: string }[]) =>
+      rows.map((row) => ({ ...row, body: undefined }));
     expect(withoutBody(functionsAfter)).toEqual(withoutBody(functionsBefore));
-    expect(functionsAfter.filter((f, i) => f.body !== functionsBefore[i]!.body).map((f) => f.proname)).toEqual(["assert_transaction_valid"]);
-    // Only transactions_shape changed, and it is validated (so every existing
-    // row satisfies it): same constraint names, same foreign keys.
+    expect(
+      functionsAfter
+        .filter((f, i) => f.body !== functionsBefore[i]!.body)
+        .map((f) => f.proname),
+    ).toEqual(["assert_transaction_valid"]);
     const constraintsAfter = await constraintCatalog(db);
-    expect(constraintsAfter.map((c) => c.conname)).toEqual(constraintsBefore.map((c) => c.conname));
-    expect(constraintsAfter.filter((c) => c.def !== constraintsBefore.find((b) => b.conname === c.conname)!.def).map((c) => c.conname)).toEqual([
-      "transactions_shape",
-    ]);
-    const shapeAfter = constraintsAfter.find((c) => c.conname === "transactions_shape")!;
+    expect(constraintsAfter.map((c) => c.conname)).toEqual(
+      constraintsBefore.map((c) => c.conname),
+    );
+    expect(
+      constraintsAfter
+        .filter(
+          (c) =>
+            c.def !==
+            constraintsBefore.find((b) => b.conname === c.conname)!.def,
+        )
+        .map((c) => c.conname),
+    ).toEqual(["transactions_shape"]);
+    const shapeAfter = constraintsAfter.find(
+      (c) => c.conname === "transactions_shape",
+    )!;
     expect(shapeAfter.convalidated).toBe(true);
     expect(shapeAfter.def).toMatch(/card_payment/);
     expect(shapeAfter.def).toMatch(/ELSE false/i);
-    // The enum gained exactly one value, at the end.
-    const kinds = await db.query("SELECT unnest(enum_range(NULL::finora.transaction_kind))::text AS kind");
-    expect(kinds.rows.map((r) => r.kind)).toEqual(["opening_balance", "income", "expense", "transfer", "card_payment"]);
+    const kinds = await db.query(
+      "SELECT unnest(enum_range(NULL::finora.transaction_kind))::text AS kind",
+    );
+    expect(kinds.rows.map((r) => r.kind)).toEqual([
+      "opening_balance",
+      "income",
+      "expense",
+      "transfer",
+      "card_payment",
+    ]);
 
-    // The remaining migrations, so the application path can be exercised too
-    // (this working tree's finance store needs the columns they add).
     deployMigrations(scratch.url);
 
-    // And now a card payment works, reducing the amount owed and the bank balance.
-    expect((await finance.getAccount(owner, card.id)).balance.toDecimalString()).toBe("13250.00");
-    expect((await finance.getAccount(owner, bank.id)).balance.toDecimalString()).toBe("51000.00");
+    expect(
+      (await finance.getAccount(owner, card.id)).balance.toDecimalString(),
+    ).toBe("13250.00");
+    expect(
+      (await finance.getAccount(owner, bank.id)).balance.toDecimalString(),
+    ).toBe("51000.00");
     const payment = await finance.recordTransaction(owner, {
       kind: "card_payment",
       amount: "5000",
@@ -125,8 +201,12 @@ describe("migrations 20261026000000_card_payment_kind and 20261026000100_card_pa
       ["liability", "debit", "500000", "INR"],
       ["asset", "credit", "500000", "INR"],
     ]);
-    expect((await finance.getAccount(owner, card.id)).balance.toDecimalString()).toBe("8250.00");
-    expect((await finance.getAccount(owner, bank.id)).balance.toDecimalString()).toBe("46000.00");
+    expect(
+      (await finance.getAccount(owner, card.id)).balance.toDecimalString(),
+    ).toBe("8250.00");
+    expect(
+      (await finance.getAccount(owner, bank.id)).balance.toDecimalString(),
+    ).toBe("46000.00");
   }, 180_000);
 });
 
@@ -145,19 +225,52 @@ describe("card payments (migrated scratch database)", () => {
   }, 120_000);
 
   const fresh = () => newOwner(db, finance, prisma);
-  const balanceOf = async (owner: AuthorizedOwner, id: string) => (await finance.getAccount(owner, id)).balance.toDecimalString();
-  const card = async (owner: AuthorizedOwner, name: string, extra: Record<string, unknown> = {}) =>
-    (await finance.createAccount(owner, { name, type: "credit_card", idempotencyKey: randomUUID(), ...extra })).value;
-  const bank = async (owner: AuthorizedOwner, name: string, extra: Record<string, unknown> = {}) =>
-    (await finance.createAccount(owner, { name, type: "bank", idempotencyKey: randomUUID(), ...extra })).value;
+  const balanceOf = async (owner: AuthorizedOwner, id: string) =>
+    (await finance.getAccount(owner, id)).balance.toDecimalString();
+  const card = async (
+    owner: AuthorizedOwner,
+    name: string,
+    extra: Record<string, unknown> = {},
+  ) =>
+    (
+      await finance.createAccount(owner, {
+        name,
+        type: "credit_card",
+        idempotencyKey: randomUUID(),
+        ...extra,
+      })
+    ).value;
+  const bank = async (
+    owner: AuthorizedOwner,
+    name: string,
+    extra: Record<string, unknown> = {},
+  ) =>
+    (
+      await finance.createAccount(owner, {
+        name,
+        type: "bank",
+        idempotencyKey: randomUUID(),
+        ...extra,
+      })
+    ).value;
   const pay = (owner: AuthorizedOwner, extra: Record<string, unknown>) =>
-    finance.recordTransaction(owner, { kind: "card_payment", amount: "5000", date: today, idempotencyKey: randomUUID(), ...extra });
+    finance.recordTransaction(owner, {
+      kind: "card_payment",
+      amount: "5000",
+      date: today,
+      idempotencyKey: randomUUID(),
+      ...extra,
+    });
 
   describe("service", () => {
     it("posts Dr the card / Cr the paying account, so the amount owed and the balance both fall", async () => {
       const { seeded, owner } = await fresh();
-      const hdfc = await card(owner, "HDFC Card", { openingBalance: { amount: "12000", date: "2026-10-01" } });
-      const axis = await bank(owner, "Axis", { openingBalance: { amount: "50000", date: "2026-10-01" } });
+      const hdfc = await card(owner, "HDFC Card", {
+        openingBalance: { amount: "12000", date: "2026-10-01" },
+      });
+      const axis = await bank(owner, "Axis", {
+        openingBalance: { amount: "50000", date: "2026-10-01" },
+      });
       const before = await counts(db, seeded.ownerId);
 
       const { value: payment, replayed } = await pay(owner, {
@@ -182,7 +295,6 @@ describe("card payments (migrated scratch database)", () => {
         ["liability", "debit", "500000", "INR"],
         ["asset", "credit", "500000", "INR"],
       ]);
-      // Exactly the card's and the bank's own ledger accounts: no category.
       expect(await entryAccounts(db, payment.journalEntryId)).toEqual([
         [hdfc.ledgerAccountId, "debit", "500000"],
         [axis.ledgerAccountId, "credit", "500000"],
@@ -192,25 +304,42 @@ describe("card payments (migrated scratch database)", () => {
         entries: before.entries + 1,
         lines: before.lines + 2,
       });
-      expect(await balanceOf(owner, hdfc.id)).toBe("7000.00"); // owed: 12,000 − 5,000
-      expect(await balanceOf(owner, axis.id)).toBe("45000.00"); // held: 50,000 − 5,000
+      expect(await balanceOf(owner, hdfc.id)).toBe("7000.00");
+      expect(await balanceOf(owner, axis.id)).toBe("45000.00");
 
-      // It is in both accounts' histories, and in neither expense nor income totals.
-      const cardHistory = await finance.listTransactions(owner, { accountId: hdfc.id });
-      expect(cardHistory.map((t) => [t.kind, t.amount.toDecimalString()])).toEqual([
+      const cardHistory = await finance.listTransactions(owner, {
+        accountId: hdfc.id,
+      });
+      expect(
+        cardHistory.map((t) => [t.kind, t.amount.toDecimalString()]),
+      ).toEqual([
         ["card_payment", "5000.00"],
         ["opening_balance", "12000.00"],
       ]);
-      expect((await finance.listTransactions(owner, { accountId: axis.id })).map((t) => t.kind)).toEqual(["card_payment", "opening_balance"]);
-      expect(await finance.listTransactions(owner, { kind: "expense" })).toEqual([]);
-      expect(await finance.listTransactions(owner, { kind: "income" })).toEqual([]);
-      expect((await finance.listTransactions(owner, { kind: "card_payment" })).map((t) => t.id)).toEqual([payment.id]);
+      expect(
+        (await finance.listTransactions(owner, { accountId: axis.id })).map(
+          (t) => t.kind,
+        ),
+      ).toEqual(["card_payment", "opening_balance"]);
+      expect(
+        await finance.listTransactions(owner, { kind: "expense" }),
+      ).toEqual([]);
+      expect(await finance.listTransactions(owner, { kind: "income" })).toEqual(
+        [],
+      );
+      expect(
+        (await finance.listTransactions(owner, { kind: "card_payment" })).map(
+          (t) => t.id,
+        ),
+      ).toEqual([payment.id]);
     });
 
     it("does not count as an expense even when the card also has expenses", async () => {
       const { owner, named } = await fresh();
       const hdfc = await card(owner, "Mixed card");
-      const axis = await bank(owner, "Mixed bank", { openingBalance: { amount: "10000", date: today } });
+      const axis = await bank(owner, "Mixed bank", {
+        openingBalance: { amount: "10000", date: today },
+      });
       await finance.recordTransaction(owner, {
         kind: "expense",
         amount: "1250",
@@ -220,22 +349,36 @@ describe("card payments (migrated scratch database)", () => {
         idempotencyKey: randomUUID(),
       });
       expect(await balanceOf(owner, hdfc.id)).toBe("1250.00");
-      await pay(owner, { amount: "1250", sourceAccountId: axis.id, destinationAccountId: hdfc.id });
+      await pay(owner, {
+        amount: "1250",
+        sourceAccountId: axis.id,
+        destinationAccountId: hdfc.id,
+      });
 
-      expect(await balanceOf(owner, hdfc.id)).toBe("0.00"); // nothing owed
+      expect(await balanceOf(owner, hdfc.id)).toBe("0.00");
       expect(await balanceOf(owner, axis.id)).toBe("8750.00");
-      // The expense total is the one purchase; the payment is not in it.
-      const expenses = await finance.listTransactions(owner, { kind: "expense" });
-      expect(expenses.map((t) => t.amount.toDecimalString())).toEqual(["1250.00"]);
+      const expenses = await finance.listTransactions(owner, {
+        kind: "expense",
+      });
+      expect(expenses.map((t) => t.amount.toDecimalString())).toEqual([
+        "1250.00",
+      ]);
       expect(expenses.map((t) => t.destinationAccountId)).toEqual([null]);
     });
 
     it("pays more than is owed, leaving a credit balance in the owner's favour", async () => {
       const { owner } = await fresh();
-      const hdfc = await card(owner, "Overpaid card", { openingBalance: { amount: "1000", date: today } });
-      const axis = await bank(owner, "Overpay bank", { openingBalance: { amount: "10000", date: today } });
-      await pay(owner, { amount: "1500", sourceAccountId: axis.id, destinationAccountId: hdfc.id });
-      // A liability's normal balance is credits − debits, so it goes negative.
+      const hdfc = await card(owner, "Overpaid card", {
+        openingBalance: { amount: "1000", date: today },
+      });
+      const axis = await bank(owner, "Overpay bank", {
+        openingBalance: { amount: "10000", date: today },
+      });
+      await pay(owner, {
+        amount: "1500",
+        sourceAccountId: axis.id,
+        destinationAccountId: hdfc.id,
+      });
       expect(await balanceOf(owner, hdfc.id)).toBe("-500.00");
       expect(await balanceOf(owner, axis.id)).toBe("8500.00");
     });
@@ -243,17 +386,36 @@ describe("card payments (migrated scratch database)", () => {
     it("pays a card that owes nothing at all", async () => {
       const { owner } = await fresh();
       const hdfc = await card(owner, "Zero card");
-      const axis = await bank(owner, "Zero bank", { openingBalance: { amount: "100", date: today } });
-      await pay(owner, { amount: "100", sourceAccountId: axis.id, destinationAccountId: hdfc.id });
+      const axis = await bank(owner, "Zero bank", {
+        openingBalance: { amount: "100", date: today },
+      });
+      await pay(owner, {
+        amount: "100",
+        sourceAccountId: axis.id,
+        destinationAccountId: hdfc.id,
+      });
       expect(await balanceOf(owner, hdfc.id)).toBe("-100.00");
       expect(await balanceOf(owner, axis.id)).toBe("0.00");
     });
 
     it("pays from a cash account too, in the card's own currency and precision", async () => {
       const { owner } = await fresh();
-      const wallet = (await finance.createAccount(owner, { name: "Wallet", type: "cash", openingBalance: { amount: "5000", date: today }, idempotencyKey: randomUUID() })).value;
-      const hdfc = await card(owner, "Cash-paid card", { openingBalance: { amount: "3000", date: today } });
-      const { value } = await pay(owner, { amount: "1234.56", sourceAccountId: wallet.id, destinationAccountId: hdfc.id });
+      const wallet = (
+        await finance.createAccount(owner, {
+          name: "Wallet",
+          type: "cash",
+          openingBalance: { amount: "5000", date: today },
+          idempotencyKey: randomUUID(),
+        })
+      ).value;
+      const hdfc = await card(owner, "Cash-paid card", {
+        openingBalance: { amount: "3000", date: today },
+      });
+      const { value } = await pay(owner, {
+        amount: "1234.56",
+        sourceAccountId: wallet.id,
+        destinationAccountId: hdfc.id,
+      });
       expect(value.amount.currency.code).toBe("INR");
       expect(await lines(db, value.journalEntryId)).toEqual([
         ["liability", "debit", "123456", "INR"],
@@ -265,12 +427,33 @@ describe("card payments (migrated scratch database)", () => {
 
     it("posts a USD card payment in USD, and refuses an over-precise amount", async () => {
       const { owner } = await fresh();
-      const usdCard = await card(owner, "USD card", { currency: "USD", openingBalance: { amount: "100", date: today } });
-      const usdBank = await bank(owner, "USD bank", { currency: "USD", openingBalance: { amount: "500", date: today } });
-      await expect(pay(owner, { amount: "12.345", sourceAccountId: usdBank.id, destinationAccountId: usdCard.id })).rejects.toMatchObject({
-        issues: [expect.objectContaining({ field: "amount", message: expect.stringMatching(/USD/) })],
+      const usdCard = await card(owner, "USD card", {
+        currency: "USD",
+        openingBalance: { amount: "100", date: today },
       });
-      const { value } = await pay(owner, { amount: "12.34", sourceAccountId: usdBank.id, destinationAccountId: usdCard.id });
+      const usdBank = await bank(owner, "USD bank", {
+        currency: "USD",
+        openingBalance: { amount: "500", date: today },
+      });
+      await expect(
+        pay(owner, {
+          amount: "12.345",
+          sourceAccountId: usdBank.id,
+          destinationAccountId: usdCard.id,
+        }),
+      ).rejects.toMatchObject({
+        issues: [
+          expect.objectContaining({
+            field: "amount",
+            message: expect.stringMatching(/USD/),
+          }),
+        ],
+      });
+      const { value } = await pay(owner, {
+        amount: "12.34",
+        sourceAccountId: usdBank.id,
+        destinationAccountId: usdCard.id,
+      });
       expect(value.amount.currency.code).toBe("USD");
       expect(await lines(db, value.journalEntryId)).toEqual([
         ["liability", "debit", "1234", "USD"],
@@ -281,11 +464,26 @@ describe("card payments (migrated scratch database)", () => {
 
     it("refuses a currency mismatch between the card and the paying account, writing nothing", async () => {
       const { seeded, owner } = await fresh();
-      const inrCard = await card(owner, "INR card", { openingBalance: { amount: "1000", date: today } });
-      const usdBank = await bank(owner, "Mismatch bank", { currency: "USD", openingBalance: { amount: "500", date: today } });
+      const inrCard = await card(owner, "INR card", {
+        openingBalance: { amount: "1000", date: today },
+      });
+      const usdBank = await bank(owner, "Mismatch bank", {
+        currency: "USD",
+        openingBalance: { amount: "500", date: today },
+      });
       const before = await counts(db, seeded.ownerId);
-      await expect(pay(owner, { sourceAccountId: usdBank.id, destinationAccountId: inrCard.id })).rejects.toMatchObject({
-        issues: [{ field: "destinationAccountId", message: expect.stringMatching(/same currency \(USD and INR\)/) }],
+      await expect(
+        pay(owner, {
+          sourceAccountId: usdBank.id,
+          destinationAccountId: inrCard.id,
+        }),
+      ).rejects.toMatchObject({
+        issues: [
+          {
+            field: "destinationAccountId",
+            message: expect.stringMatching(/same currency \(USD and INR\)/),
+          },
+        ],
       });
       expect(await counts(db, seeded.ownerId)).toEqual(before);
       expect(await balanceOf(owner, inrCard.id)).toBe("1000.00");
@@ -299,10 +497,20 @@ describe("card payments (migrated scratch database)", () => {
       ["not a number", "five thousand"],
     ])("refuses a %s amount, writing nothing", async (_label, amount) => {
       const { seeded, owner } = await fresh();
-      const hdfc = await card(owner, `Amount card ${amount}`, { openingBalance: { amount: "1000", date: today } });
-      const axis = await bank(owner, `Amount bank ${amount}`, { openingBalance: { amount: "9000", date: today } });
+      const hdfc = await card(owner, `Amount card ${amount}`, {
+        openingBalance: { amount: "1000", date: today },
+      });
+      const axis = await bank(owner, `Amount bank ${amount}`, {
+        openingBalance: { amount: "9000", date: today },
+      });
       const before = await counts(db, seeded.ownerId);
-      await expect(pay(owner, { amount, sourceAccountId: axis.id, destinationAccountId: hdfc.id })).rejects.toMatchObject({
+      await expect(
+        pay(owner, {
+          amount,
+          sourceAccountId: axis.id,
+          destinationAccountId: hdfc.id,
+        }),
+      ).rejects.toMatchObject({
         issues: [expect.objectContaining({ field: "amount" })],
       });
       expect(await counts(db, seeded.ownerId)).toEqual(before);
@@ -314,29 +522,62 @@ describe("card payments (migrated scratch database)", () => {
       const { seeded, owner } = await fresh();
       const hdfc = await card(owner, "Types card A");
       const icici = await card(owner, "Types card B");
-      const axis = await bank(owner, "Types bank", { openingBalance: { amount: "1000", date: today } });
-      const wallet = (await finance.createAccount(owner, { name: "Types wallet", type: "cash", idempotencyKey: randomUUID() })).value;
+      const axis = await bank(owner, "Types bank", {
+        openingBalance: { amount: "1000", date: today },
+      });
+      const wallet = (
+        await finance.createAccount(owner, {
+          name: "Types wallet",
+          type: "cash",
+          idempotencyKey: randomUUID(),
+        })
+      ).value;
       const before = await counts(db, seeded.ownerId);
 
-      // A bank or cash account is never the card being paid. (Two different
-      // accounts each time, so this is the type rule and not the
-      // same-account rule.)
       for (const [source, destination] of [
         [wallet.id, axis.id],
         [axis.id, wallet.id],
       ]) {
-        await expect(pay(owner, { sourceAccountId: source, destinationAccountId: destination })).rejects.toMatchObject({
-          issues: [{ field: "destinationAccountId", message: expect.stringMatching(/is not a credit card; choose a credit card/) }],
+        await expect(
+          pay(owner, {
+            sourceAccountId: source,
+            destinationAccountId: destination,
+          }),
+        ).rejects.toMatchObject({
+          issues: [
+            {
+              field: "destinationAccountId",
+              message: expect.stringMatching(
+                /is not a credit card; choose a credit card/,
+              ),
+            },
+          ],
         });
       }
-      // A card never pays another card.
-      await expect(pay(owner, { sourceAccountId: hdfc.id, destinationAccountId: icici.id })).rejects.toMatchObject({
-        issues: [{ field: "sourceAccountId", message: expect.stringMatching(/is a credit card; a card can only pay for an expense, be paid by a card payment or be credited by a card refund/) }],
+      await expect(
+        pay(owner, {
+          sourceAccountId: hdfc.id,
+          destinationAccountId: icici.id,
+        }),
+      ).rejects.toMatchObject({
+        issues: [
+          {
+            field: "sourceAccountId",
+            message: expect.stringMatching(
+              /is a credit card; a card can only pay for an expense, be paid by a card payment or be credited by a card refund/,
+            ),
+          },
+        ],
       });
-      // And a card never pays itself: the same account on both sides is
-      // refused while parsing, before any class is looked up.
-      await expect(pay(owner, { sourceAccountId: hdfc.id, destinationAccountId: hdfc.id })).rejects.toMatchObject({
-        issues: [{ field: "destinationAccountId", message: "Choose two different accounts" }],
+      await expect(
+        pay(owner, { sourceAccountId: hdfc.id, destinationAccountId: hdfc.id }),
+      ).rejects.toMatchObject({
+        issues: [
+          {
+            field: "destinationAccountId",
+            message: "Choose two different accounts",
+          },
+        ],
       });
       expect(await counts(db, seeded.ownerId)).toEqual(before);
       expect(await balanceOf(owner, axis.id)).toBe("1000.00");
@@ -346,45 +587,89 @@ describe("card payments (migrated scratch database)", () => {
     it("refuses an archived card or paying account, and another owner's accounts, writing nothing", async () => {
       const { seeded, owner } = await fresh();
       const other = await fresh();
-      const hdfc = await card(owner, "Archive card", { openingBalance: { amount: "2000", date: today } });
-      const axis = await bank(owner, "Archive bank", { openingBalance: { amount: "9000", date: today } });
-      const theirCard = await card(other.owner, "Their card", { openingBalance: { amount: "100", date: today } });
-      const theirBank = await bank(other.owner, "Their bank", { openingBalance: { amount: "100", date: today } });
+      const hdfc = await card(owner, "Archive card", {
+        openingBalance: { amount: "2000", date: today },
+      });
+      const axis = await bank(owner, "Archive bank", {
+        openingBalance: { amount: "9000", date: today },
+      });
+      const theirCard = await card(other.owner, "Their card", {
+        openingBalance: { amount: "100", date: today },
+      });
+      const theirBank = await bank(other.owner, "Their bank", {
+        openingBalance: { amount: "100", date: today },
+      });
       const before = await counts(db, seeded.ownerId);
       const mine = { sourceAccountId: axis.id, destinationAccountId: hdfc.id };
 
       await finance.archiveAccount(owner, hdfc.id);
       await expect(pay(owner, mine)).rejects.toMatchObject({
-        issues: [{ field: "destinationAccountId", message: expect.stringMatching(/is archived/) }],
+        issues: [
+          {
+            field: "destinationAccountId",
+            message: expect.stringMatching(/is archived/),
+          },
+        ],
       });
       await finance.restoreAccount(owner, hdfc.id);
 
       await finance.archiveAccount(owner, axis.id);
       await expect(pay(owner, mine)).rejects.toMatchObject({
-        issues: [{ field: "sourceAccountId", message: expect.stringMatching(/is archived/) }],
+        issues: [
+          {
+            field: "sourceAccountId",
+            message: expect.stringMatching(/is archived/),
+          },
+        ],
       });
       await finance.restoreAccount(owner, axis.id);
 
-      // Another owner's accounts are simply not visible under this owner.
-      await expect(pay(owner, { sourceAccountId: axis.id, destinationAccountId: theirCard.id })).rejects.toMatchObject({
-        issues: [{ field: "destinationAccountId", message: "That account does not exist" }],
+      await expect(
+        pay(owner, {
+          sourceAccountId: axis.id,
+          destinationAccountId: theirCard.id,
+        }),
+      ).rejects.toMatchObject({
+        issues: [
+          {
+            field: "destinationAccountId",
+            message: "That account does not exist",
+          },
+        ],
       });
-      await expect(pay(owner, { sourceAccountId: theirBank.id, destinationAccountId: hdfc.id })).rejects.toMatchObject({
-        issues: [{ field: "sourceAccountId", message: "That account does not exist" }],
+      await expect(
+        pay(owner, {
+          sourceAccountId: theirBank.id,
+          destinationAccountId: hdfc.id,
+        }),
+      ).rejects.toMatchObject({
+        issues: [
+          { field: "sourceAccountId", message: "That account does not exist" },
+        ],
       });
       expect(await counts(db, seeded.ownerId)).toEqual(before);
       expect(await balanceOf(other.owner, theirCard.id)).toBe("100.00");
       expect(await balanceOf(other.owner, theirBank.id)).toBe("100.00");
-      // The owner's own payment still works once nothing is archived.
-      await expect(pay(owner, mine)).resolves.toMatchObject({ replayed: false });
+      await expect(pay(owner, mine)).resolves.toMatchObject({
+        replayed: false,
+      });
     });
 
     it("replays a retried payment once, and refuses the same key for any other business field, writing nothing", async () => {
       const { seeded, owner, named } = await fresh();
       const hdfc = await card(owner, "Retry card");
       const other = await card(owner, "Retry card 2");
-      const axis = await bank(owner, "Retry bank", { openingBalance: { amount: "50000", date: today } });
-      const wallet = (await finance.createAccount(owner, { name: "Retry wallet", type: "cash", openingBalance: { amount: "5000", date: today }, idempotencyKey: randomUUID() })).value;
+      const axis = await bank(owner, "Retry bank", {
+        openingBalance: { amount: "50000", date: today },
+      });
+      const wallet = (
+        await finance.createAccount(owner, {
+          name: "Retry wallet",
+          type: "cash",
+          openingBalance: { amount: "5000", date: today },
+          idempotencyKey: randomUUID(),
+        })
+      ).value;
       const input = {
         kind: "card_payment",
         amount: "5000",
@@ -396,7 +681,10 @@ describe("card payments (migrated scratch database)", () => {
       };
       const first = await finance.recordTransaction(owner, input);
       const after = await counts(db, seeded.ownerId);
-      expect(await finance.recordTransaction(owner, input)).toEqual({ value: first.value, replayed: true });
+      expect(await finance.recordTransaction(owner, input)).toEqual({
+        value: first.value,
+        replayed: true,
+      });
 
       for (const change of [
         { destinationAccountId: other.id },
@@ -405,11 +693,18 @@ describe("card payments (migrated scratch database)", () => {
         { date: "2026-10-24" },
         { note: "Nov statement" },
         { note: null },
-        // The same key for a different kind of request is a conflict too.
-        { kind: "expense", destinationAccountId: undefined, sourceAccountId: axis.id, categoryId: named("Groceries").id },
+        {
+          kind: "expense",
+          destinationAccountId: undefined,
+          sourceAccountId: axis.id,
+          categoryId: named("Groceries").id,
+        },
         { kind: "transfer", destinationAccountId: wallet.id },
       ]) {
-        await expect(finance.recordTransaction(owner, { ...input, ...change }), JSON.stringify(change)).rejects.toThrow(IdempotencyConflictError);
+        await expect(
+          finance.recordTransaction(owner, { ...input, ...change }),
+          JSON.stringify(change),
+        ).rejects.toThrow(IdempotencyConflictError);
       }
       expect(await counts(db, seeded.ownerId)).toEqual(after);
       expect(await balanceOf(owner, hdfc.id)).toBe("-5000.00");
@@ -420,23 +715,36 @@ describe("card payments (migrated scratch database)", () => {
 
     it("voids a payment with its exact mirror, so the amount owed comes back", async () => {
       const { owner } = await fresh();
-      const hdfc = await card(owner, "Void card", { openingBalance: { amount: "4000", date: today } });
-      const axis = await bank(owner, "Void bank", { openingBalance: { amount: "9000", date: today } });
-      const { value } = await pay(owner, { amount: "1500", sourceAccountId: axis.id, destinationAccountId: hdfc.id });
+      const hdfc = await card(owner, "Void card", {
+        openingBalance: { amount: "4000", date: today },
+      });
+      const axis = await bank(owner, "Void bank", {
+        openingBalance: { amount: "9000", date: today },
+      });
+      const { value } = await pay(owner, {
+        amount: "1500",
+        sourceAccountId: axis.id,
+        destinationAccountId: hdfc.id,
+      });
       expect(await balanceOf(owner, hdfc.id)).toBe("2500.00");
       expect(await balanceOf(owner, axis.id)).toBe("7500.00");
 
-      const voided = await finance.voidTransaction(owner, value.id, { date: today, idempotencyKey: randomUUID() });
+      const voided = await finance.voidTransaction(owner, value.id, {
+        date: today,
+        idempotencyKey: randomUUID(),
+      });
       expect(await lines(db, voided.value.reversalEntryId!)).toEqual([
         ["liability", "credit", "150000", "INR"],
         ["asset", "debit", "150000", "INR"],
       ]);
       expect(await balanceOf(owner, hdfc.id)).toBe("4000.00");
       expect(await balanceOf(owner, axis.id)).toBe("9000.00");
-      // Voiding again with another key is refused; nothing changes.
-      await expect(finance.voidTransaction(owner, value.id, { date: today, idempotencyKey: randomUUID() })).rejects.toThrow(
-        /already been voided or corrected/,
-      );
+      await expect(
+        finance.voidTransaction(owner, value.id, {
+          date: today,
+          idempotencyKey: randomUUID(),
+        }),
+      ).rejects.toThrow(/already been voided or corrected/);
       expect(await balanceOf(owner, hdfc.id)).toBe("4000.00");
       expect(await balanceOf(owner, axis.id)).toBe("9000.00");
     });
@@ -444,29 +752,59 @@ describe("card payments (migrated scratch database)", () => {
     it("has no payee, and keeps a note editable without touching the journal", async () => {
       const { owner } = await fresh();
       const hdfc = await card(owner, "Note card");
-      const axis = await bank(owner, "Note bank", { openingBalance: { amount: "900", date: today } });
-      const { value } = await pay(owner, { amount: "900", sourceAccountId: axis.id, destinationAccountId: hdfc.id });
-      await expect(finance.updateTransactionDetails(owner, value.id, { payee: "HDFC", note: null })).rejects.toMatchObject({
-        issues: [{ field: "payee", message: "Transfers, card payments and opening balances have no payee" }],
+      const axis = await bank(owner, "Note bank", {
+        openingBalance: { amount: "900", date: today },
       });
-      await finance.updateTransactionDetails(owner, value.id, { payee: null, note: "Paid in full" });
-      expect((await finance.getTransaction(owner, value.id)).note).toBe("Paid in full");
-      // The journal keeps the original text, so the fingerprint is unchanged.
-      const { rows } = await db.query("SELECT memo FROM finora.journal_lines WHERE entry_id = $1 ORDER BY line_no", [value.journalEntryId]);
+      const { value } = await pay(owner, {
+        amount: "900",
+        sourceAccountId: axis.id,
+        destinationAccountId: hdfc.id,
+      });
+      await expect(
+        finance.updateTransactionDetails(owner, value.id, {
+          payee: "HDFC",
+          note: null,
+        }),
+      ).rejects.toMatchObject({
+        issues: [
+          {
+            field: "payee",
+            message:
+              "Transfers, card payments and opening balances have no payee",
+          },
+        ],
+      });
+      await finance.updateTransactionDetails(owner, value.id, {
+        payee: null,
+        note: "Paid in full",
+      });
+      expect((await finance.getTransaction(owner, value.id)).note).toBe(
+        "Paid in full",
+      );
+      const { rows } = await db.query(
+        "SELECT memo FROM finora.journal_lines WHERE entry_id = $1 ORDER BY line_no",
+        [value.journalEntryId],
+      );
       expect(rows.map((r) => r.memo)).toEqual([null, null]);
     });
 
     it("derives both balances from posted lines alone, with no stored-balance drift", async () => {
       const { owner } = await fresh();
-      const hdfc = await card(owner, "Drift card", { openingBalance: { amount: "10000", date: today } });
-      const axis = await bank(owner, "Drift bank", { openingBalance: { amount: "20000", date: today } });
+      const hdfc = await card(owner, "Drift card", {
+        openingBalance: { amount: "10000", date: today },
+      });
+      const axis = await bank(owner, "Drift bank", {
+        openingBalance: { amount: "20000", date: today },
+      });
       for (const amount of ["1000", "2500.50", "0.01"]) {
-        await pay(owner, { amount, sourceAccountId: axis.id, destinationAccountId: hdfc.id });
+        await pay(owner, {
+          amount,
+          sourceAccountId: axis.id,
+          destinationAccountId: hdfc.id,
+        });
       }
-      expect(await balanceOf(owner, hdfc.id)).toBe("6499.49"); // 10,000 − 3,500.51
-      expect(await balanceOf(owner, axis.id)).toBe("16499.49"); // 20,000 − 3,500.51
-      // The same figures straight from the ledger: credits − debits for the
-      // card, debits − credits for the bank account.
+      expect(await balanceOf(owner, hdfc.id)).toBe("6499.49");
+      expect(await balanceOf(owner, axis.id)).toBe("16499.49");
       const normal = async (ledgerAccountId: string, sign: 1 | -1) =>
         (
           await db.query(
@@ -496,8 +834,12 @@ describe("card payments (migrated scratch database)", () => {
     let groceriesId: string;
     let groceriesLedger: string;
 
-    /** Posts a balanced two-line entry for the owner, returning its id. */
-    async function postedEntry(debit: string, credit: string, amount: number, currency = "INR"): Promise<string> {
+    async function postedEntry(
+      debit: string,
+      credit: string,
+      amount: number,
+      currency = "INR",
+    ): Promise<string> {
       const { rows } = await app.query(
         "INSERT INTO finora.journal_entries (owner_id, entry_date, description) VALUES ($1, $2, 'raw') RETURNING id::text",
         [ownerId, today],
@@ -507,7 +849,10 @@ describe("card payments (migrated scratch database)", () => {
          VALUES ($1, $2, 1, $3, $6, 'debit', $5), ($1, $2, 2, $4, $6, 'credit', $5)`,
         [ownerId, rows[0].id, debit, credit, amount, currency],
       );
-      await app.query("UPDATE finora.journal_entries SET status = 'posted' WHERE id = $1", [rows[0].id]);
+      await app.query(
+        "UPDATE finora.journal_entries SET status = 'posted' WHERE id = $1",
+        [rows[0].id],
+      );
       return rows[0].id as string;
     }
 
@@ -524,12 +869,27 @@ describe("card payments (migrated scratch database)", () => {
         `INSERT INTO finora.transactions (owner_id, kind, occurred_on, amount_minor, currency_code,
            source_account_id, destination_account_id, category_id, journal_entry_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [ownerId, row.kind, today, row.amount, row.currency ?? "INR", row.source ?? null, row.destination ?? null, row.category ?? null, row.entry],
+        [
+          ownerId,
+          row.kind,
+          today,
+          row.amount,
+          row.currency ?? "INR",
+          row.source ?? null,
+          row.destination ?? null,
+          row.category ?? null,
+          row.entry,
+        ],
       );
-    const asTheOwner = <T>(work: () => Promise<T>) => asOwner(app, ownerId, work);
+    const asTheOwner = <T>(work: () => Promise<T>) =>
+      asOwner(app, ownerId, work);
     const paymentsOn = async (id: string) =>
-      (await db.query("SELECT count(*)::int AS n FROM finora.transactions WHERE kind = 'card_payment' AND destination_account_id = $1", [id])).rows[0]
-        .n as number;
+      (
+        await db.query(
+          "SELECT count(*)::int AS n FROM finora.transactions WHERE kind = 'card_payment' AND destination_account_id = $1",
+          [id],
+        )
+      ).rows[0].n as number;
 
     beforeAll(async () => {
       const { seeded, owner, named } = await fresh();
@@ -537,14 +897,32 @@ describe("card payments (migrated scratch database)", () => {
       ownerId = seeded.ownerId;
       const hdfc = await card(owner, "Raw pay card");
       const icici = await card(owner, "Raw pay card 2");
-      const axis = await bank(owner, "Raw pay bank", { openingBalance: { amount: "100000", date: today } });
-      const wallet = (await finance.createAccount(owner, { name: "Raw pay wallet", type: "cash", idempotencyKey: randomUUID() })).value;
-      [cardId, cardLedger, card2Id, card2Ledger] = [hdfc.id, hdfc.ledgerAccountId, icici.id, icici.ledgerAccountId];
-      [bankId, bankLedger, walletId, walletLedger] = [axis.id, axis.ledgerAccountId, wallet.id, wallet.ledgerAccountId];
-      usdCardId = (await card(owner, "Raw pay USD card", { currency: "USD" })).id;
+      const axis = await bank(owner, "Raw pay bank", {
+        openingBalance: { amount: "100000", date: today },
+      });
+      const wallet = (
+        await finance.createAccount(owner, {
+          name: "Raw pay wallet",
+          type: "cash",
+          idempotencyKey: randomUUID(),
+        })
+      ).value;
+      [cardId, cardLedger, card2Id, card2Ledger] = [
+        hdfc.id,
+        hdfc.ledgerAccountId,
+        icici.id,
+        icici.ledgerAccountId,
+      ];
+      [bankId, bankLedger, walletId, walletLedger] = [
+        axis.id,
+        axis.ledgerAccountId,
+        wallet.id,
+        wallet.ledgerAccountId,
+      ];
+      usdCardId = (await card(owner, "Raw pay USD card", { currency: "USD" }))
+        .id;
       otherCardId = (await card(other.owner, "Other owner's paid card")).id;
       groceriesId = named("Groceries").id;
-      // Map the category in INR through the application (first use creates it).
       await finance.recordTransaction(owner, {
         kind: "expense",
         amount: "1",
@@ -554,64 +932,185 @@ describe("card payments (migrated scratch database)", () => {
         idempotencyKey: randomUUID(),
       });
       groceriesLedger = (
-        await db.query("SELECT ledger_account_id::text AS id FROM finora.category_ledger_accounts WHERE category_id = $1 AND currency_code = 'INR'", [
-          groceriesId,
-        ])
+        await db.query(
+          "SELECT ledger_account_id::text AS id FROM finora.category_ledger_accounts WHERE category_id = $1 AND currency_code = 'INR'",
+          [groceriesId],
+        )
       ).rows[0].id as string;
     }, 60_000);
 
     it("accepts a payment whose entry is exactly Dr the card / Cr the paying account", async () => {
       const before = await paymentsOn(cardId);
-      await asTheOwner(async () => insert({ kind: "card_payment", amount: 500000, source: bankId, destination: cardId, entry: await postedEntry(cardLedger, bankLedger, 500000) }));
-      await asTheOwner(async () => insert({ kind: "card_payment", amount: 2500, source: walletId, destination: cardId, entry: await postedEntry(cardLedger, walletLedger, 2500) }));
+      await asTheOwner(async () =>
+        insert({
+          kind: "card_payment",
+          amount: 500000,
+          source: bankId,
+          destination: cardId,
+          entry: await postedEntry(cardLedger, bankLedger, 500000),
+        }),
+      );
+      await asTheOwner(async () =>
+        insert({
+          kind: "card_payment",
+          amount: 2500,
+          source: walletId,
+          destination: cardId,
+          entry: await postedEntry(cardLedger, walletLedger, 2500),
+        }),
+      );
       expect(await paymentsOn(cardId)).toBe(before + 2);
     });
 
     it.each([
-      ["the wrong direction (Dr the bank / Cr the card)", () => ({ debit: bankLedger, credit: cardLedger, entryAmount: 500, amount: 500 })],
-      ["another card's liability account", () => ({ debit: card2Ledger, credit: bankLedger, entryAmount: 500, amount: 500 })],
-      ["a category account instead of the card", () => ({ debit: groceriesLedger, credit: bankLedger, entryAmount: 500, amount: 500 })],
-      ["a different amount", () => ({ debit: cardLedger, credit: bankLedger, entryAmount: 500, amount: 501 })],
+      [
+        "the wrong direction (Dr the bank / Cr the card)",
+        () => ({
+          debit: bankLedger,
+          credit: cardLedger,
+          entryAmount: 500,
+          amount: 500,
+        }),
+      ],
+      [
+        "another card's liability account",
+        () => ({
+          debit: card2Ledger,
+          credit: bankLedger,
+          entryAmount: 500,
+          amount: 500,
+        }),
+      ],
+      [
+        "a category account instead of the card",
+        () => ({
+          debit: groceriesLedger,
+          credit: bankLedger,
+          entryAmount: 500,
+          amount: 500,
+        }),
+      ],
+      [
+        "a different amount",
+        () => ({
+          debit: cardLedger,
+          credit: bankLedger,
+          entryAmount: 500,
+          amount: 501,
+        }),
+      ],
     ])("refuses a payment whose entry has %s", async (_label, parts) => {
       const { debit, credit, entryAmount, amount } = parts();
       const before = await paymentsOn(cardId);
       await expect(
-        asTheOwner(async () => insert({ kind: "card_payment", amount, source: bankId, destination: cardId, entry: await postedEntry(debit, credit, entryAmount) })),
+        asTheOwner(async () =>
+          insert({
+            kind: "card_payment",
+            amount,
+            source: bankId,
+            destination: cardId,
+            entry: await postedEntry(debit, credit, entryAmount),
+          }),
+        ),
       ).rejects.toThrow(/the journal entry does not match the transaction/);
       expect(await paymentsOn(cardId)).toBe(before);
     });
 
     it.each([
-      ["a bank account as the card being paid", () => ({ source: walletId, destination: bankId, debit: bankLedger, credit: walletLedger })],
-      ["a cash account as the card being paid", () => ({ source: bankId, destination: walletId, debit: walletLedger, credit: bankLedger })],
-      ["a card as the paying account (card to card)", () => ({ source: card2Id, destination: cardId, debit: cardLedger, credit: card2Ledger })],
-    ])("refuses %s at COMMIT, even with an entry matching the template", async (_label, make) => {
-      const { debit, credit, ...row } = make();
-      const before = await paymentsOn(row.destination);
-      await expect(asTheOwner(async () => insert({ kind: "card_payment", amount: 700, ...row, entry: await postedEntry(debit, credit, 700) }))).rejects.toThrow(
-        WRONG_CLASSES,
-      );
-      expect(await paymentsOn(row.destination)).toBe(before);
-    });
+      [
+        "a bank account as the card being paid",
+        () => ({
+          source: walletId,
+          destination: bankId,
+          debit: bankLedger,
+          credit: walletLedger,
+        }),
+      ],
+      [
+        "a cash account as the card being paid",
+        () => ({
+          source: bankId,
+          destination: walletId,
+          debit: walletLedger,
+          credit: bankLedger,
+        }),
+      ],
+      [
+        "a card as the paying account (card to card)",
+        () => ({
+          source: card2Id,
+          destination: cardId,
+          debit: cardLedger,
+          credit: card2Ledger,
+        }),
+      ],
+    ])(
+      "refuses %s at COMMIT, even with an entry matching the template",
+      async (_label, make) => {
+        const { debit, credit, ...row } = make();
+        const before = await paymentsOn(row.destination);
+        await expect(
+          asTheOwner(async () =>
+            insert({
+              kind: "card_payment",
+              amount: 700,
+              ...row,
+              entry: await postedEntry(debit, credit, 700),
+            }),
+          ),
+        ).rejects.toThrow(WRONG_CLASSES);
+        expect(await paymentsOn(row.destination)).toBe(before);
+      },
+    );
 
     it("refuses a payment with a missing side, the same account twice, or a category (the row CHECKs and insert guard)", async () => {
       await expect(
-        asTheOwner(async () => insert({ kind: "card_payment", amount: 500, source: null, destination: cardId, entry: await postedEntry(cardLedger, bankLedger, 500) })),
+        asTheOwner(async () =>
+          insert({
+            kind: "card_payment",
+            amount: 500,
+            source: null,
+            destination: cardId,
+            entry: await postedEntry(cardLedger, bankLedger, 500),
+          }),
+        ),
       ).rejects.toThrow(/transactions_shape/);
-      await expect(
-        asTheOwner(async () => insert({ kind: "card_payment", amount: 500, source: bankId, destination: null, entry: await postedEntry(cardLedger, bankLedger, 500) })),
-      ).rejects.toThrow(/transactions_shape/);
-      await expect(
-        asTheOwner(async () => insert({ kind: "card_payment", amount: 500, source: cardId, destination: cardId, entry: await postedEntry(cardLedger, bankLedger, 500) })),
-      ).rejects.toThrow(/transactions_shape/);
-      // A category on a card payment is refused: the insert guard's
-      // category-kind check fires first (BEFORE triggers run before row
-      // CHECKs), and the shape CHECK would refuse it too.
       await expect(
         asTheOwner(async () =>
-          insert({ kind: "card_payment", amount: 500, source: bankId, destination: cardId, category: groceriesId, entry: await postedEntry(cardLedger, bankLedger, 500) }),
+          insert({
+            kind: "card_payment",
+            amount: 500,
+            source: bankId,
+            destination: null,
+            entry: await postedEntry(cardLedger, bankLedger, 500),
+          }),
         ),
-      ).rejects.toThrow(/the category kind does not match the transaction|transactions_shape/);
+      ).rejects.toThrow(/transactions_shape/);
+      await expect(
+        asTheOwner(async () =>
+          insert({
+            kind: "card_payment",
+            amount: 500,
+            source: cardId,
+            destination: cardId,
+            entry: await postedEntry(cardLedger, bankLedger, 500),
+          }),
+        ),
+      ).rejects.toThrow(/transactions_shape/);
+      await expect(
+        asTheOwner(async () =>
+          insert({
+            kind: "card_payment",
+            amount: 500,
+            source: bankId,
+            destination: cardId,
+            category: groceriesId,
+            entry: await postedEntry(cardLedger, bankLedger, 500),
+          }),
+        ),
+      ).rejects.toThrow(
+        /the category kind does not match the transaction|transactions_shape/,
+      );
     });
 
     it("refuses a payment to an archived card or from an archived account", async () => {
@@ -619,7 +1118,12 @@ describe("card payments (migrated scratch database)", () => {
         [card2Id, /archived accounts cannot take new transactions/],
         [bankId, /archived accounts cannot take new transactions/],
       ] as const) {
-        await asTheOwner(() => app.query("UPDATE finora.financial_accounts SET archived_at = now() WHERE id = $1", [id]));
+        await asTheOwner(() =>
+          app.query(
+            "UPDATE finora.financial_accounts SET archived_at = now() WHERE id = $1",
+            [id],
+          ),
+        );
         try {
           await expect(
             asTheOwner(async () =>
@@ -633,17 +1137,38 @@ describe("card payments (migrated scratch database)", () => {
             ),
           ).rejects.toThrow(message);
         } finally {
-          await asTheOwner(() => app.query("UPDATE finora.financial_accounts SET archived_at = NULL WHERE id = $1", [id]));
+          await asTheOwner(() =>
+            app.query(
+              "UPDATE finora.financial_accounts SET archived_at = NULL WHERE id = $1",
+              [id],
+            ),
+          );
         }
       }
     });
 
     it("refuses another owner's card and a currency other than the card's", async () => {
       await expect(
-        asTheOwner(async () => insert({ kind: "card_payment", amount: 900, source: bankId, destination: otherCardId, entry: await postedEntry(cardLedger, bankLedger, 900) })),
+        asTheOwner(async () =>
+          insert({
+            kind: "card_payment",
+            amount: 900,
+            source: bankId,
+            destination: otherCardId,
+            entry: await postedEntry(cardLedger, bankLedger, 900),
+          }),
+        ),
       ).rejects.toThrow(/transactions_destination_account_fkey/);
       await expect(
-        asTheOwner(async () => insert({ kind: "card_payment", amount: 900, source: bankId, destination: usdCardId, entry: await postedEntry(cardLedger, bankLedger, 900) })),
+        asTheOwner(async () =>
+          insert({
+            kind: "card_payment",
+            amount: 900,
+            source: bankId,
+            destination: usdCardId,
+            entry: await postedEntry(cardLedger, bankLedger, 900),
+          }),
+        ),
       ).rejects.toThrow(/transactions_destination_account_fkey/);
       expect(await paymentsOn(otherCardId)).toBe(0);
       expect(await paymentsOn(usdCardId)).toBe(0);
@@ -656,29 +1181,59 @@ describe("card payments (migrated scratch database)", () => {
       );
       const id = rows[0].id as string;
       const edits: [string, unknown[]][] = [
-        ["UPDATE finora.transactions SET kind = 'transfer' WHERE id = $1", [id]],
-        ["UPDATE finora.transactions SET destination_account_id = $2 WHERE id = $1", [id, card2Id]],
-        ["UPDATE finora.transactions SET source_account_id = $2 WHERE id = $1", [id, walletId]],
+        [
+          "UPDATE finora.transactions SET kind = 'transfer' WHERE id = $1",
+          [id],
+        ],
+        [
+          "UPDATE finora.transactions SET destination_account_id = $2 WHERE id = $1",
+          [id, card2Id],
+        ],
+        [
+          "UPDATE finora.transactions SET source_account_id = $2 WHERE id = $1",
+          [id, walletId],
+        ],
         ["UPDATE finora.transactions SET amount_minor = 1 WHERE id = $1", [id]],
-        ["UPDATE finora.transactions SET occurred_on = '2026-01-01' WHERE id = $1", [id]],
+        [
+          "UPDATE finora.transactions SET occurred_on = '2026-01-01' WHERE id = $1",
+          [id],
+        ],
       ];
       for (const [sql, params] of edits) {
         await expect(asTheOwner(() => app.query(sql, params))).rejects.toThrow(
           /a transaction's accounting fields are immutable|permission denied/,
         );
       }
-      await expect(asTheOwner(() => app.query("DELETE FROM finora.transactions WHERE id = $1", [id]))).rejects.toThrow(
-        /transactions are never deleted|permission denied/,
-      );
+      await expect(
+        asTheOwner(() =>
+          app.query("DELETE FROM finora.transactions WHERE id = $1", [id]),
+        ),
+      ).rejects.toThrow(/transactions are never deleted|permission denied/);
     });
 
     it("still refuses a transfer to or from a card, so only a card payment pays a card", async () => {
       const before = await paymentsOn(cardId);
       await expect(
-        asTheOwner(async () => insert({ kind: "transfer", amount: 700, source: bankId, destination: cardId, entry: await postedEntry(cardLedger, bankLedger, 700) })),
+        asTheOwner(async () =>
+          insert({
+            kind: "transfer",
+            amount: 700,
+            source: bankId,
+            destination: cardId,
+            entry: await postedEntry(cardLedger, bankLedger, 700),
+          }),
+        ),
       ).rejects.toThrow(/income and transfers use bank and cash accounts only/);
       await expect(
-        asTheOwner(async () => insert({ kind: "transfer", amount: 700, source: cardId, destination: bankId, entry: await postedEntry(bankLedger, cardLedger, 700) })),
+        asTheOwner(async () =>
+          insert({
+            kind: "transfer",
+            amount: 700,
+            source: cardId,
+            destination: bankId,
+            entry: await postedEntry(bankLedger, cardLedger, 700),
+          }),
+        ),
       ).rejects.toThrow(/income and transfers use bank and cash accounts only/);
       expect(await paymentsOn(cardId)).toBe(before);
     });

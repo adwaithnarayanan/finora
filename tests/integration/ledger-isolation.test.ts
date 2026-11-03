@@ -2,18 +2,23 @@ import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { inject } from "vitest";
 
-import { type JournalEntry, type LedgerAccount, LedgerValidationError } from "@/domain/ledger";
+import {
+  type JournalEntry,
+  type LedgerAccount,
+  LedgerValidationError,
+} from "@/domain/ledger";
 import type { AuthorizedOwner } from "@/server/auth/types";
 import { createPrismaClient } from "@/server/db/client";
 import { LedgerNotFoundError } from "@/server/ledger/errors";
 
-import { adminClient, appPrisma, deleteOwners, seedOwner, type SeededOwner } from "./support/db";
+import {
+  adminClient,
+  appPrisma,
+  deleteOwners,
+  seedOwner,
+  type SeededOwner,
+} from "./support/db";
 import { authorize, ledgerFor, line, newKey } from "./support/ledger";
-
-/**
- * Owner isolation through the ledger service: owner A, holding a genuine
- * AuthorizedOwner, aims every operation at owner B's records.
- */
 
 const prisma = appPrisma();
 const ledger = ledgerFor(prisma);
@@ -47,9 +52,21 @@ beforeAll(async () => {
   seededB = await seedOwner(admin);
   ownerA = await authorize(prisma, seededA.subject);
   ownerB = await authorize(prisma, seededB.subject);
-  aCash = await ledger.createAccount(ownerA, { name: "Cash", kind: "asset", currency: "INR" });
-  bCash = await ledger.createAccount(ownerB, { name: "Cash", kind: "asset", currency: "INR" });
-  bIncome = await ledger.createAccount(ownerB, { name: "Income", kind: "income", currency: "INR" });
+  aCash = await ledger.createAccount(ownerA, {
+    name: "Cash",
+    kind: "asset",
+    currency: "INR",
+  });
+  bCash = await ledger.createAccount(ownerB, {
+    name: "Cash",
+    kind: "asset",
+    currency: "INR",
+  });
+  bIncome = await ledger.createAccount(ownerB, {
+    name: "Income",
+    kind: "income",
+    currency: "INR",
+  });
   ({ entry: bPosted } = await ledger.postEntry(ownerB, {
     entryDate: today,
     description: "B posted",
@@ -64,32 +81,50 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await deleteOwners(admin, [seededA, seededB].filter(Boolean).map((o) => o.ownerId));
+  await deleteOwners(
+    admin,
+    [seededA, seededB].filter(Boolean).map((o) => o.ownerId),
+  );
   await admin.end();
   await prisma.$disconnect();
 });
 
 describe("owner A against owner B's records", () => {
   it("cannot read B's entries or account balances", async () => {
-    await expect(ledger.getEntry(ownerA, bPosted.id)).rejects.toThrow(LedgerNotFoundError);
-    await expect(ledger.getAccountBalance(ownerA, bCash.id)).rejects.toThrow(LedgerNotFoundError);
+    await expect(ledger.getEntry(ownerA, bPosted.id)).rejects.toThrow(
+      LedgerNotFoundError,
+    );
+    await expect(ledger.getAccountBalance(ownerA, bCash.id)).rejects.toThrow(
+      LedgerNotFoundError,
+    );
   });
 
   it("cannot modify, post, validate, reverse or correct B's entries", async () => {
     const before = await snapshotB();
     const attempts = [
-      ledger.replaceDraftLines(ownerA, bDraft.id, [line(aCash.id, "debit", "1")]),
+      ledger.replaceDraftLines(ownerA, bDraft.id, [
+        line(aCash.id, "debit", "1"),
+      ]),
       ledger.postDraft(ownerA, bDraft.id),
       ledger.validateDraft(ownerA, bDraft.id),
-      ledger.reverseEntry(ownerA, bPosted.id, { entryDate: today, description: "x", idempotencyKey: newKey() }),
+      ledger.reverseEntry(ownerA, bPosted.id, {
+        entryDate: today,
+        description: "x",
+        idempotencyKey: newKey(),
+      }),
       ledger.correctEntry(ownerA, bPosted.id, {
         entryDate: today,
         description: "x",
         idempotencyKey: newKey(),
-        replacement: { entryDate: today, description: "y", lines: [line(aCash.id, "debit", "1"), line(aCash.id, "credit", "1")] },
+        replacement: {
+          entryDate: today,
+          description: "y",
+          lines: [line(aCash.id, "debit", "1"), line(aCash.id, "credit", "1")],
+        },
       }),
     ];
-    for (const attempt of attempts) await expect(attempt).rejects.toThrow(LedgerNotFoundError);
+    for (const attempt of attempts)
+      await expect(attempt).rejects.toThrow(LedgerNotFoundError);
     expect(await snapshotB()).toEqual(before);
   });
 
@@ -101,8 +136,9 @@ describe("owner A against owner B's records", () => {
       lines: [line(aCash.id, "debit", "1"), line(bIncome.id, "credit", "1")],
     });
     await expect(attempt).rejects.toThrow(LedgerValidationError);
-    // Indistinguishable from an id that does not exist at all.
-    await expect(attempt).rejects.toMatchObject({ issues: [{ code: "unknown-account", line: 1 }] });
+    await expect(attempt).rejects.toMatchObject({
+      issues: [{ code: "unknown-account", line: 1 }],
+    });
   });
 
   it("does not see B's idempotency keys", async () => {
@@ -117,21 +153,38 @@ describe("owner A against owner B's records", () => {
   });
 
   it("leaves B able to use its own records", async () => {
-    await expect(ledger.postDraft(ownerB, bDraft.id)).resolves.toMatchObject({ replayed: false });
+    await expect(ledger.postDraft(ownerB, bDraft.id)).resolves.toMatchObject({
+      replayed: false,
+    });
   });
 });
 
 describe("authorisation requirements", () => {
   it("rejects a forged owner object at runtime", async () => {
-    const forged = { ownerId: "not-a-uuid", identity: { provider: "x", subject: "y" } } as unknown as AuthorizedOwner;
-    await expect(ledger.getEntry(forged, bPosted.id)).rejects.toThrow(/canonical lowercase UUID/);
+    const forged = {
+      ownerId: "not-a-uuid",
+      identity: { provider: "x", subject: "y" },
+    } as unknown as AuthorizedOwner;
+    await expect(ledger.getEntry(forged, bPosted.id)).rejects.toThrow(
+      /canonical lowercase UUID/,
+    );
   });
 
   it("an owner id with no matching rows sees nothing (no context bleed)", async () => {
-    const ghost = { ...ownerA, ownerId: "00000000-0000-4000-8000-000000000000" } as AuthorizedOwner;
-    await expect(ledger.getEntry(ghost, bPosted.id)).rejects.toThrow(LedgerNotFoundError);
-    // Writes by the ghost cannot satisfy RLS or the owner foreign key.
-    await expect(ledger.createAccount(ghost, { name: "Ghost", kind: "asset", currency: "INR" })).rejects.toThrow();
+    const ghost = {
+      ...ownerA,
+      ownerId: "00000000-0000-4000-8000-000000000000",
+    } as AuthorizedOwner;
+    await expect(ledger.getEntry(ghost, bPosted.id)).rejects.toThrow(
+      LedgerNotFoundError,
+    );
+    await expect(
+      ledger.createAccount(ghost, {
+        name: "Ghost",
+        kind: "asset",
+        currency: "INR",
+      }),
+    ).rejects.toThrow();
   });
 
   it("does not leak scope to the next transaction on a reused connection", async () => {
@@ -153,10 +206,12 @@ describe("error hygiene", () => {
     const broken = createPrismaClient(url.toString(), 1);
     const brokenLedger = ledgerFor(broken);
     try {
-      const error = await brokenLedger.getEntry(ownerA, bPosted.id).catch((e: unknown) => e);
+      const error = await brokenLedger
+        .getEntry(ownerA, bPosted.id)
+        .catch((e: unknown) => e);
       expect(error).toBeInstanceOf(Error);
       const text = `${String(error)} ${JSON.stringify(error, Object.getOwnPropertyNames(error))}`;
-      expect(text).toMatch(/authentication failed/i); // failed for the intended reason
+      expect(text).toMatch(/authentication failed/i);
       expect(text).not.toContain(secret);
       expect(text).not.toContain(url.toString());
     } finally {
@@ -168,8 +223,10 @@ describe("error hygiene", () => {
     const buggy = ledgerFor(prisma, (store) => {
       const original = store.replaceLines.bind(store);
       return Object.assign(Object.create(Object.getPrototypeOf(store)), store, {
-        replaceLines: (id: Parameters<typeof original>[0], lines: Parameters<typeof original>[1]) =>
-          original(id, lines.slice(0, 1)),
+        replaceLines: (
+          id: Parameters<typeof original>[0],
+          lines: Parameters<typeof original>[1],
+        ) => original(id, lines.slice(0, 1)),
       });
     });
     const error = await buggy
@@ -183,7 +240,9 @@ describe("error hygiene", () => {
         () => new Error("expected a rejection"),
         (e: unknown) => e as Error,
       );
-    expect(error.message).toBe("The ledger rejected the change: posted journal entry is unbalanced");
+    expect(error.message).toBe(
+      "The ledger rejected the change: posted journal entry is unbalanced",
+    );
     expect(error.message).not.toMatch(/INSERT|UPDATE|SELECT|postgres/i);
   });
 });

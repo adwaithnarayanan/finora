@@ -14,18 +14,12 @@ import {
   migrationSet,
 } from "./scratch-db";
 
-/** finora_app's URL for a scratch database (the role is cluster-wide). */
 function appUrl(scratch: ScratchDatabase): string {
   const url = new URL(inject("local").appDatabaseUrl);
   url.pathname = `/${scratch.name}`;
   return url.toString();
 }
 
-/**
- * Scratch databases for one test file. Everything created through the returned
- * helpers is cleaned up after the file: connections first, then the databases,
- * then any temporary migrations copies.
- */
 export function scratchHarness() {
   const scratches: ScratchDatabase[] = [];
   const sets: MigrationSet[] = [];
@@ -35,27 +29,38 @@ export function scratchHarness() {
     await runCleanup([
       ...closers,
       ...scratches.map((s) => [`drop ${s.name}`, () => s.drop()] as const),
-      ...sets.map((s) => ["remove a temporary migrations copy", async () => s.remove()] as const),
+      ...sets.map(
+        (s) =>
+          [
+            "remove a temporary migrations copy",
+            async () => s.remove(),
+          ] as const,
+      ),
     ]);
   });
 
-  /** A migrated scratch database, optionally only through migration `through`. */
-  async function scratchDatabase(label: string, through?: string): Promise<ScratchDatabase> {
+  async function scratchDatabase(
+    label: string,
+    through?: string,
+  ): Promise<ScratchDatabase> {
     const set = through === undefined ? undefined : migrationSet({ through });
     if (set) sets.push(set);
-    const scratch = await createMigratedScratchDatabase(label, { migrate: (url) => deployMigrations(url, set) });
+    const scratch = await createMigratedScratchDatabase(label, {
+      migrate: (url) => deployMigrations(url, set),
+    });
     scratches.push(scratch);
     return scratch;
   }
 
-  /** The finance service as finora_app on a scratch database. */
   function financeOn(scratch: ScratchDatabase, connections = 1) {
     const prisma = createPrismaClient(appUrl(scratch), connections);
-    closers.push(["disconnect a scratch Prisma client", () => prisma.$disconnect()]);
+    closers.push([
+      "disconnect a scratch Prisma client",
+      () => prisma.$disconnect(),
+    ]);
     return { prisma, finance: financeFor(prisma) };
   }
 
-  /** A raw connection as finora_app on a scratch database (RLS and grants apply). */
   async function appClientOn(scratch: ScratchDatabase): Promise<pg.Client> {
     const client = new pg.Client({ connectionString: appUrl(scratch) });
     await client.connect();
@@ -63,7 +68,6 @@ export function scratchHarness() {
     return client;
   }
 
-  /** The real project migrations up to and including `through`, applied to an existing scratch database. */
   function deployThrough(scratch: ScratchDatabase, through: string): void {
     const set = migrationSet({ through });
     sets.push(set);
@@ -73,8 +77,11 @@ export function scratchHarness() {
   return { scratchDatabase, financeOn, appClientOn, deployThrough };
 }
 
-/** A new owner with the default categories. */
-export async function newOwner(db: pg.Client, finance: ReturnType<typeof financeFor>, prisma: Parameters<typeof authorize>[0]) {
+export async function newOwner(
+  db: pg.Client,
+  finance: ReturnType<typeof financeFor>,
+  prisma: Parameters<typeof authorize>[0],
+) {
   const seeded = await seedOwner(db);
   const owner = await authorize(prisma, seeded.subject);
   await finance.initializeDefaultCategories(owner);

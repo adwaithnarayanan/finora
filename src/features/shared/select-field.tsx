@@ -26,7 +26,6 @@ export function SelectField({
   hint?: ReactNode;
   error?: string;
   options: readonly { value: string; label: string }[];
-  /** Label of the empty first option; omitted when a value is always chosen. */
   placeholder?: string;
   defaultValue?: string;
   remountKey?: string | number;
@@ -40,10 +39,14 @@ export function SelectField({
           {...props}
           key={remountKey}
           defaultValue={defaultValue}
-          onChange={onChange ? (event) => onChange(event.target.value) : undefined}
+          onChange={
+            onChange ? (event) => onChange(event.target.value) : undefined
+          }
           required={required}
         >
-          {placeholder === undefined ? null : <option value="">{placeholder}</option>}
+          {placeholder === undefined ? null : (
+            <option value="">{placeholder}</option>
+          )}
           {options.map((o) => (
             <option key={o.value} value={o.value}>
               {o.label}

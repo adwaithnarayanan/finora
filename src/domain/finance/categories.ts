@@ -17,11 +17,10 @@ export interface CategoryRef {
   readonly archived: boolean;
 }
 
-/**
- * Offered to an owner who has no categories yet; created only when the owner
- * explicitly asks for them (never while rendering a page). Editable afterwards.
- */
-export const DEFAULT_CATEGORIES: readonly { readonly name: string; readonly kind: CategoryKind }[] = [
+export const DEFAULT_CATEGORIES: readonly {
+  readonly name: string;
+  readonly kind: CategoryKind;
+}[] = [
   { name: "Salary", kind: "income" },
   { name: "Interest", kind: "income" },
   { name: "Other income", kind: "income" },

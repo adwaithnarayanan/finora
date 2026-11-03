@@ -2,10 +2,6 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
 
-/**
- * The domain layer is pure TypeScript: no framework, persistence, auth provider,
- * Node built-ins, or app-layer modules. Exported so the rule itself is tested.
- */
 export const domainBoundaryRule = {
   files: ["src/domain/**/*.{ts,tsx}"],
   rules: {
@@ -92,16 +88,20 @@ const supabaseSdk = {
     "Supabase SDKs are confined to src/server/auth/supabase and src/proxy.ts (docs/adr/0003).",
 };
 
-/**
- * Infrastructure boundaries outside the domain layer. Exported for tests.
- * Later configs override earlier ones per file, so the domain rule comes last.
- */
 export const infrastructureBoundaryRules = [
   {
     files: ["src/**/*.{ts,tsx}"],
-    ignores: ["src/server/db/**", "src/server/auth/supabase/**", "src/proxy.ts", "src/domain/**"],
+    ignores: [
+      "src/server/db/**",
+      "src/server/auth/supabase/**",
+      "src/proxy.ts",
+      "src/domain/**",
+    ],
     rules: {
-      "no-restricted-imports": ["error", { patterns: [prismaInternals, supabaseSdk] }],
+      "no-restricted-imports": [
+        "error",
+        { patterns: [prismaInternals, supabaseSdk] },
+      ],
     },
   },
   {

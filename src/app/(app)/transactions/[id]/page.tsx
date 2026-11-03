@@ -9,8 +9,18 @@ import { ConfirmAction } from "@/components/confirm-action";
 import { PageLoading } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatLedgerDate, formatMoney, todayInIndia } from "@/features/shared/format";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  formatLedgerDate,
+  formatMoney,
+  todayInIndia,
+} from "@/features/shared/format";
 import { voidTransactionAction } from "@/features/transactions/actions";
 import { TransactionDetailsForm } from "@/features/transactions/details-form";
 import { TransactionList } from "@/features/transactions/transaction-list";
@@ -21,7 +31,9 @@ import { finance } from "@/server/finance";
 
 export const metadata: Metadata = { title: "Transaction" };
 
-export default function TransactionPage({ params }: PageProps<"/transactions/[id]">) {
+export default function TransactionPage({
+  params,
+}: PageProps<"/transactions/[id]">) {
   return (
     <Suspense fallback={<PageLoading label="Loading transaction…" />}>
       <TransactionDetail params={params} />
@@ -29,14 +41,15 @@ export default function TransactionPage({ params }: PageProps<"/transactions/[id
   );
 }
 
-async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]">, "params">) {
+async function TransactionDetail({
+  params,
+}: Pick<PageProps<"/transactions/[id]">, "params">) {
   const owner = await requireOwner();
   const { id } = await params;
   const transaction = await orNotFound(finance.getTransaction(owner, id));
   const [accounts, categories, refunds, refunded] = await Promise.all([
     finance.listAccounts(owner),
     finance.listCategories(owner),
-    // Null unless this is an expense a credit card paid for.
     finance.getPurchaseRefunds(owner, id),
     transaction.kind === "card_refund" && transaction.refundsTransactionId
       ? finance.getTransaction(owner, transaction.refundsTransactionId)
@@ -58,16 +71,25 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
     <div className="grid max-w-2xl gap-8">
       <div>
         <p className="text-sm text-muted-foreground">
-          <Link href="/transactions" className="underline-offset-4 hover:underline">
+          <Link
+            href="/transactions"
+            className="underline-offset-4 hover:underline"
+          >
             Transactions
           </Link>{" "}
           / {view.kindLabel}
         </p>
         <h1 className="mt-1 flex flex-wrap items-center gap-2 text-2xl font-semibold tracking-tight sm:text-3xl">
           {view.title}
-          {view.voided ? <Badge variant="destructive">{view.corrected ? "Corrected" : "Void"}</Badge> : null}
+          {view.voided ? (
+            <Badge variant="destructive">
+              {view.corrected ? "Corrected" : "Void"}
+            </Badge>
+          ) : null}
         </h1>
-        <p className={`mt-2 text-3xl font-semibold tabular-nums ${view.voided ? "text-muted-foreground line-through" : ""}`}>
+        <p
+          className={`mt-2 text-3xl font-semibold tabular-nums ${view.voided ? "text-muted-foreground line-through" : ""}`}
+        >
           {view.amount}
         </p>
       </div>
@@ -77,7 +99,12 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
         <dd>{view.dateLabel}</dd>
         {transaction.sourceAccountId ? (
           <>
-            <dt className="text-muted-foreground">{transaction.kind === "expense" || transaction.kind === "card_payment" ? "Paid from" : "From"}</dt>
+            <dt className="text-muted-foreground">
+              {transaction.kind === "expense" ||
+              transaction.kind === "card_payment"
+                ? "Paid from"
+                : "From"}
+            </dt>
             <dd>{link(transaction.sourceAccountId)}</dd>
           </>
         ) : null}
@@ -107,13 +134,15 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
             <dd>
               {refunded ? (
                 <TextLink href={`/transactions/${refunded.id}`}>
-                  {toTransactionView(refunded, lookups).title} of {formatMoney(refunded.amount)} on{" "}
+                  {toTransactionView(refunded, lookups).title} of{" "}
+                  {formatMoney(refunded.amount)} on{" "}
                   {formatLedgerDate(refunded.occurredOn)}
                 </TextLink>
               ) : (
                 "A purchase that is not recorded in Finora (a merchant credit)"
               )}
-              . It reduces the amount owed on the card and this category&apos;s expenses; it is not income.
+              . It reduces the amount owed on the card and this category&apos;s
+              expenses; it is not income.
             </dd>
           </>
         ) : null}
@@ -122,12 +151,17 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
             <dt className="text-muted-foreground">Status</dt>
             <dd>
               {view.corrected ? "Corrected" : "Voided"} on{" "}
-              {formatLedgerDate(transaction.voidedAt.toISOString().slice(0, 10))}. A reversing entry cancels its effect; the
-              original stays on record.
+              {formatLedgerDate(
+                transaction.voidedAt.toISOString().slice(0, 10),
+              )}
+              . A reversing entry cancels its effect; the original stays on
+              record.
               {transaction.replacedByTransactionId ? (
                 <>
                   {" "}
-                  <TextLink href={`/transactions/${transaction.replacedByTransactionId}`}>
+                  <TextLink
+                    href={`/transactions/${transaction.replacedByTransactionId}`}
+                  >
                     See the replacement
                   </TextLink>
                   .
@@ -141,14 +175,21 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
       <Card>
         <CardHeader>
           <CardTitle>Details</CardTitle>
-          <CardDescription>Payee and note can be edited. Amount, date, accounts and category are fixed once recorded.</CardDescription>
+          <CardDescription>
+            Payee and note can be edited. Amount, date, accounts and category
+            are fixed once recorded.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <TransactionDetailsForm
             transactionId={transaction.id}
             payee={transaction.payee}
             note={transaction.note}
-            allowPayee={transaction.kind === "income" || transaction.kind === "expense" || transaction.kind === "card_refund"}
+            allowPayee={
+              transaction.kind === "income" ||
+              transaction.kind === "expense" ||
+              transaction.kind === "card_refund"
+            }
           />
         </CardContent>
       </Card>
@@ -158,18 +199,33 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
           <CardHeader>
             <CardTitle>Refunds</CardTitle>
             <CardDescription>
-              A refund of this purchase credits the same expense category, so it reduces your expenses and the amount owed
-              on the card. It is never recorded as income.
+              A refund of this purchase credits the same expense category, so it
+              reduces your expenses and the amount owed on the card. It is never
+              recorded as income.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4">
             <p className="text-sm">
-              <span className="font-medium tabular-nums">{formatMoney(refunds.refunded)}</span> refunded of{" "}
-              <span className="tabular-nums">{formatMoney(refunds.purchase.amount)}</span>, leaving{" "}
-              <span className="font-medium tabular-nums">{formatMoney(refunds.remaining)}</span> refundable.
+              <span className="font-medium tabular-nums">
+                {formatMoney(refunds.refunded)}
+              </span>{" "}
+              refunded of{" "}
+              <span className="tabular-nums">
+                {formatMoney(refunds.purchase.amount)}
+              </span>
+              , leaving{" "}
+              <span className="font-medium tabular-nums">
+                {formatMoney(refunds.remaining)}
+              </span>{" "}
+              refundable.
             </p>
             {refunds.refunds.length > 0 ? (
-              <TransactionList transactions={refunds.refunds.map((r) => toTransactionView(r, lookups))} empty="" />
+              <TransactionList
+                transactions={refunds.refunds.map((r) =>
+                  toTransactionView(r, lookups),
+                )}
+                empty=""
+              />
             ) : null}
             {!transaction.voidedAt && !refunds.remaining.isZero() ? (
               <div>
@@ -190,18 +246,24 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
           <CardHeader>
             <CardTitle>Void</CardTitle>
             <CardDescription>
-              Made a mistake? Voiding records a reversing entry that cancels this transaction. Then record it again correctly.
+              Made a mistake? Voiding records a reversing entry that cancels
+              this transaction. Then record it again correctly.
             </CardDescription>
           </CardHeader>
           <CardContent>
             {refunds && !refunds.refunded.isZero() ? (
               <p className="text-sm text-muted-foreground">
-                This purchase has refunds recorded against it. Void those first, so no refund is left refunding nothing.
+                This purchase has refunds recorded against it. Void those first,
+                so no refund is left refunding nothing.
               </p>
             ) : (
               <ConfirmAction
                 action={voidTransactionAction}
-                fields={{ transactionId: transaction.id, idempotencyKey: randomUUID(), date: todayInIndia() }}
+                fields={{
+                  transactionId: transaction.id,
+                  idempotencyKey: randomUUID(),
+                  date: todayInIndia(),
+                }}
                 label="Void transaction"
                 confirmLabel="Yes, void it"
                 description={`Void this ${view.kindLabel.toLowerCase()} of ${view.amount}? Balances return to what they were without it.`}
@@ -210,7 +272,9 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
           </CardContent>
         </Card>
       ) : null}
-      {transaction.kind === "opening_balance" && !transaction.voidedAt && transaction.destinationAccountId ? (
+      {transaction.kind === "opening_balance" &&
+      !transaction.voidedAt &&
+      transaction.destinationAccountId ? (
         <p className="text-sm text-muted-foreground">
           Opening balances are corrected from the{" "}
           <TextLink href={`/accounts/${transaction.destinationAccountId}`}>

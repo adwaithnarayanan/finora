@@ -8,7 +8,6 @@ import { requireOwner } from "@/server/auth/session";
 import { toActionState } from "./errors";
 import { type ActionState, formEntries } from "./form-state";
 
-/** What a form handler returns on success: a message for the form, or a page to go to. */
 type FormOutcome = { message: string } | { redirectTo: string };
 
 /**
@@ -19,8 +18,14 @@ type FormOutcome = { message: string } | { redirectTo: string };
  */
 export async function runFormAction(
   formData: FormData,
-  handler: (owner: AuthorizedOwner, input: Record<string, string>) => Promise<FormOutcome>,
-  refineError: (state: ActionState, input: Record<string, string>) => ActionState = (state) => state,
+  handler: (
+    owner: AuthorizedOwner,
+    input: Record<string, string>,
+  ) => Promise<FormOutcome>,
+  refineError: (
+    state: ActionState,
+    input: Record<string, string>,
+  ) => ActionState = (state) => state,
 ): Promise<ActionState> {
   const owner = await requireOwner();
   const input = formEntries(formData);

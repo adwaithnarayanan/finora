@@ -4,11 +4,6 @@ import { useActionState, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
-/**
- * A destructive or significant action that needs a second, explicit click.
- * The first button reveals what will happen and a confirm/cancel pair; focus
- * moves to the explanation so screen readers announce it.
- */
 export function ConfirmAction({
   action,
   fields,
@@ -25,30 +20,58 @@ export function ConfirmAction({
   variant?: "destructive" | "default";
 }) {
   const [open, setOpen] = useState(false);
-  const [, submit, pending] = useActionState(async (_: null, formData: FormData) => {
-    await action(formData);
-    return null;
-  }, null);
+  const [, submit, pending] = useActionState(
+    async (_: null, formData: FormData) => {
+      await action(formData);
+      return null;
+    },
+    null,
+  );
   if (!open) {
     return (
-      <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen(true)}
+      >
         {label}
       </Button>
     );
   }
   return (
-    <form action={submit} className="grid gap-2 rounded-lg border p-3" aria-label={label}>
+    <form
+      action={submit}
+      className="grid gap-2 rounded-lg border p-3"
+      aria-label={label}
+    >
       {Object.entries(fields).map(([name, value]) => (
         <input key={name} type="hidden" name={name} value={value} />
       ))}
-      <p role="status" tabIndex={-1} ref={(node) => node?.focus()} className="text-sm outline-none">
+      <p
+        role="status"
+        tabIndex={-1}
+        ref={(node) => node?.focus()}
+        className="text-sm outline-none"
+      >
         {description}
       </p>
       <div className="flex flex-wrap gap-2">
-        <Button type="submit" variant={variant} size="sm" loading={pending} loadingText="Working…">
+        <Button
+          type="submit"
+          variant={variant}
+          size="sm"
+          loading={pending}
+          loadingText="Working…"
+        >
           {confirmLabel}
         </Button>
-        <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => setOpen(false)}
+        >
           Cancel
         </Button>
       </div>

@@ -1,4 +1,3 @@
-/** Base class for every error raised by the finance domain. */
 export class FinanceError extends Error {
   constructor(message: string) {
     super(message);
@@ -6,23 +5,22 @@ export class FinanceError extends Error {
   }
 }
 
-/** A field a user can fix (shown next to that field in forms). */
 export interface FieldIssue {
   readonly field: string;
   readonly message: string;
 }
 
-/** User input is invalid; `issues` lists every problem found, by field. */
 export class FinanceValidationError extends FinanceError {
   readonly issues: readonly FieldIssue[];
 
   constructor(issues: readonly FieldIssue[]) {
-    super(`Invalid input: ${issues.map((i) => `${i.field}: ${i.message}`).join("; ")}`);
+    super(
+      `Invalid input: ${issues.map((i) => `${i.field}: ${i.message}`).join("; ")}`,
+    );
     this.issues = Object.freeze([...issues]);
   }
 }
 
-/** Collects field issues and throws them together. */
 export class IssueCollector {
   private readonly issues: FieldIssue[] = [];
 
@@ -30,7 +28,6 @@ export class IssueCollector {
     this.issues.push({ field, message });
   }
 
-  /** Runs `parse`, recording its error message against `field`. */
   capture<T>(field: string, parse: () => T): T | undefined {
     try {
       return parse();

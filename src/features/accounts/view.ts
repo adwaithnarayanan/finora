@@ -1,12 +1,16 @@
 import "server-only";
 
-import { ACCOUNT_LEDGER_KIND, ACCOUNT_TYPE_LABELS, type AccountClass, type FinancialAccountType } from "@/domain/finance";
+import {
+  ACCOUNT_LEDGER_KIND,
+  ACCOUNT_TYPE_LABELS,
+  type AccountClass,
+  type FinancialAccountType,
+} from "@/domain/finance";
 import type { Money } from "@/domain/money";
 import type { AccountSummary } from "@/server/finance";
 
 import { formatMoney } from "../shared/format";
 
-/** Plain, serialisable account data for pages and client components. */
 export interface AccountView {
   readonly id: string;
   readonly name: string;
@@ -14,23 +18,22 @@ export interface AccountView {
   readonly typeLabel: string;
   readonly ledgerKind: AccountClass;
   readonly currencyCode: string;
-  /** The balance for display: an amount for assets, "Owed …" or "Credit balance …" for cards. */
   readonly balance: string;
-  /** Shown as a warning (an overdrawn asset account). */
   readonly negative: boolean;
   readonly archived: boolean;
   readonly hasHistory: boolean;
   readonly canDelete: boolean;
 }
 
-/**
- * `balance` is the ledger's normal balance: for a liability (credit card),
- * positive is owed and negative is a credit in the owner's favour.
- */
-export function formatAccountBalance(ledgerKind: AccountClass, balance: Money): string {
+export function formatAccountBalance(
+  ledgerKind: AccountClass,
+  balance: Money,
+): string {
   if (ledgerKind === "asset") return formatMoney(balance);
   if (balance.isZero()) return `Nothing owed (${formatMoney(balance)})`;
-  return balance.isNegative() ? `Credit balance ${formatMoney(balance.negate())}` : `Owed ${formatMoney(balance)}`;
+  return balance.isNegative()
+    ? `Credit balance ${formatMoney(balance.negate())}`
+    : `Owed ${formatMoney(balance)}`;
 }
 
 export function toAccountView(summary: AccountSummary): AccountView {
@@ -51,11 +54,6 @@ export function toAccountView(summary: AccountSummary): AccountView {
   };
 }
 
-/**
- * Options for transaction account pickers: active accounts. A credit card
- * (`card`) can pay an expense and be paid by a card payment; the form offers
- * it nowhere else (income and transfers are bank and cash only).
- */
 export interface AccountOption {
   readonly id: string;
   readonly label: string;
@@ -64,7 +62,9 @@ export interface AccountOption {
   readonly card: boolean;
 }
 
-export function toAccountOptions(accounts: readonly AccountSummary[]): AccountOption[] {
+export function toAccountOptions(
+  accounts: readonly AccountSummary[],
+): AccountOption[] {
   return accounts
     .filter((a) => a.account.archivedAt === null)
     .map(({ account, balance }) => {

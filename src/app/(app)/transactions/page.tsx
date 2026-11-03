@@ -20,10 +20,13 @@ import { type TransactionFilters, finance } from "@/server/finance";
 export const metadata: Metadata = { title: "Transactions" };
 
 type Params = Awaited<PageProps<"/transactions">["searchParams"]>;
-const one = (value: string | string[] | undefined) => (typeof value === "string" ? value : "");
+const one = (value: string | string[] | undefined) =>
+  typeof value === "string" ? value : "";
 
-/** Query parameters -> filters. Anything invalid is ignored rather than trusted. */
-function parseFilters(params: Params): { filters: Partial<TransactionFilters>; raw: Record<string, string> } {
+function parseFilters(params: Params): {
+  filters: Partial<TransactionFilters>;
+  raw: Record<string, string>;
+} {
   const raw = {
     from: one(params.from),
     to: one(params.to),
@@ -54,7 +57,9 @@ function parseFilters(params: Params): { filters: Partial<TransactionFilters>; r
   return { filters, raw };
 }
 
-export default function TransactionsPage({ searchParams }: PageProps<"/transactions">) {
+export default function TransactionsPage({
+  searchParams,
+}: PageProps<"/transactions">) {
   return (
     <>
       <PageHeader
@@ -73,7 +78,9 @@ export default function TransactionsPage({ searchParams }: PageProps<"/transacti
   );
 }
 
-async function History({ searchParams }: Pick<PageProps<"/transactions">, "searchParams">) {
+async function History({
+  searchParams,
+}: Pick<PageProps<"/transactions">, "searchParams">) {
   const owner = await requireOwner();
   const params = await searchParams;
   const { filters, raw } = parseFilters(params);
@@ -87,16 +94,18 @@ async function History({ searchParams }: Pick<PageProps<"/transactions">, "searc
     categories,
   );
   const recorded = isCanonicalUuid(one(params.recorded));
-  const filtered = Object.keys(filters).some((k) => k !== "includeVoided") || raw.voided === "hide";
+  const filtered =
+    Object.keys(filters).some((k) => k !== "includeVoided") ||
+    raw.voided === "hide";
 
   return (
     <div className="grid gap-6">
-      {recorded ? (
-        <Callout>
-          Transaction recorded.
-        </Callout>
-      ) : null}
-      <form method="get" className="grid gap-3 rounded-lg border p-4 sm:grid-cols-3 lg:grid-cols-4" aria-label="Filter transactions">
+      {recorded ? <Callout>Transaction recorded.</Callout> : null}
+      <form
+        method="get"
+        className="grid gap-3 rounded-lg border p-4 sm:grid-cols-3 lg:grid-cols-4"
+        aria-label="Filter transactions"
+      >
         <div className="grid gap-1.5">
           <Label htmlFor="q">Search payee or note</Label>
           <Input id="q" name="q" type="search" defaultValue={raw.q} />
@@ -126,7 +135,11 @@ async function History({ searchParams }: Pick<PageProps<"/transactions">, "searc
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="category">Category</Label>
-          <NativeSelect id="category" name="category" defaultValue={raw.category}>
+          <NativeSelect
+            id="category"
+            name="category"
+            defaultValue={raw.category}
+          >
             <option value="">All categories</option>
             {categories.map((c) => (
               <option key={c.id} value={c.id}>
@@ -155,14 +168,19 @@ async function History({ searchParams }: Pick<PageProps<"/transactions">, "searc
             Apply
           </Button>
           {filtered ? (
-            <Link href="/transactions" className={buttonVariants({ variant: "ghost" })}>
+            <Link
+              href="/transactions"
+              className={buttonVariants({ variant: "ghost" })}
+            >
               Clear
             </Link>
           ) : null}
         </div>
       </form>
       <TransactionList
-        transactions={transactions.map((t) => toTransactionView(t, lookups, filters.accountId))}
+        transactions={transactions.map((t) =>
+          toTransactionView(t, lookups, filters.accountId),
+        )}
         empty={
           filtered ? (
             "No transactions match these filters."
@@ -178,7 +196,10 @@ async function History({ searchParams }: Pick<PageProps<"/transactions">, "searc
         }
       />
       {transactions.length >= 200 ? (
-        <p className="text-xs text-muted-foreground">Showing the 200 most recent matches. Narrow the filters to see older ones.</p>
+        <p className="text-xs text-muted-foreground">
+          Showing the 200 most recent matches. Narrow the filters to see older
+          ones.
+        </p>
       ) : null}
     </div>
   );

@@ -1,8 +1,5 @@
 import type pg from "pg";
 
-/** Read-only catalog and ledger queries shared by the scratch-database suites. */
-
-/** Journal lines of an entry as [ledger account kind, side, amount, currency]. */
 export async function lines(db: pg.Client, entryId: string) {
   const { rows } = await db.query(
     `SELECT la.kind::text AS kind, l.side::text AS side, l.amount_minor::text AS amount, la.currency_code AS currency
@@ -13,7 +10,6 @@ export async function lines(db: pg.Client, entryId: string) {
   return rows.map((r) => [r.kind, r.side, r.amount, r.currency]);
 }
 
-/** The ledger accounts an entry touches, as [ledger account id, side, amount]. */
 export async function entryAccounts(db: pg.Client, entryId: string) {
   const { rows } = await db.query(
     `SELECT l.account_id::text AS account, l.side::text AS side, l.amount_minor::text AS amount
@@ -33,7 +29,6 @@ export async function counts(db: pg.Client, ownerId: string) {
   return rows[0] as { transactions: number; entries: number; lines: number };
 }
 
-/** Every business and ledger row, so any change by the migration shows. */
 export async function dataSnapshot(db: pg.Client) {
   const tables: [string, string][] = [
     ["financial_accounts", "id"],
@@ -46,11 +41,13 @@ export async function dataSnapshot(db: pg.Client) {
     ["category_ledger_accounts", "ledger_account_id"],
   ];
   const out: Record<string, unknown[]> = {};
-  for (const [table, order] of tables) out[table] = (await db.query(`SELECT * FROM finora.${table} ORDER BY ${order}`)).rows;
+  for (const [table, order] of tables)
+    out[table] = (
+      await db.query(`SELECT * FROM finora.${table} ORDER BY ${order}`)
+    ).rows;
   return out;
 }
 
-/** Every finora function's security attributes, owner, privileges and body. */
 export async function functionCatalog(db: pg.Client) {
   const { rows } = await db.query(
     `SELECT p.proname, p.prosecdef, p.provolatile, coalesce(array_to_string(p.proconfig, ','), '') AS config,
@@ -60,7 +57,6 @@ export async function functionCatalog(db: pg.Client) {
   return rows as { proname: string; body: string }[];
 }
 
-/** Every user trigger on finora tables, with its wiring and enabled state. */
 export async function triggerCatalog(db: pg.Client) {
   const { rows } = await db.query(
     `SELECT t.tgrelid::regclass::text AS tbl, t.tgname, t.tgfoid::regproc::text AS fn, t.tgenabled, t.tgtype,
@@ -71,13 +67,17 @@ export async function triggerCatalog(db: pg.Client) {
   return rows;
 }
 
-/** Every CHECK and foreign-key constraint on finora.transactions, by name. */
 export async function constraintCatalog(db: pg.Client) {
   const { rows } = await db.query(
     `SELECT con.conname, con.contype::text AS contype, con.convalidated, pg_get_constraintdef(con.oid) AS def
        FROM pg_constraint con WHERE con.conrelid = 'finora.transactions'::regclass ORDER BY con.conname`,
   );
-  return rows as { conname: string; contype: string; convalidated: boolean; def: string }[];
+  return rows as {
+    conname: string;
+    contype: string;
+    convalidated: boolean;
+    def: string;
+  }[];
 }
 
 export async function migrationRows(db: pg.Client, name: string) {

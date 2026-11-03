@@ -13,10 +13,11 @@ export type {
   RefundablePurchase,
   Replayable,
 } from "./service";
-export type { CategoryRecord, FinancialAccountRecord, TransactionFilters, TransactionRecord } from "./store";
+export type {
+  CategoryRecord,
+  FinancialAccountRecord,
+  TransactionFilters,
+  TransactionRecord,
+} from "./store";
 
-/**
- * Financial accounts, categories and transactions for server code. Callers
- * pass the `AuthorizedOwner` from `requireOwner()`.
- */
 export const finance = createFinanceService(withFinanceStores);

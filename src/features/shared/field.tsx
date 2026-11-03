@@ -2,10 +2,6 @@ import type { ReactNode } from "react";
 
 import { Label } from "@/components/ui/label";
 
-/**
- * A labelled form control with its hint and error. The control must use
- * `id={name}`; error and hint are linked with aria-describedby.
- */
 export function Field({
   name,
   label,
@@ -17,9 +13,19 @@ export function Field({
   label: ReactNode;
   hint?: ReactNode;
   error?: string;
-  children: (props: { id: string; name: string; "aria-invalid"?: true; "aria-describedby"?: string }) => ReactNode;
+  children: (props: {
+    id: string;
+    name: string;
+    "aria-invalid"?: true;
+    "aria-describedby"?: string;
+  }) => ReactNode;
 }) {
-  const described = [hint ? `${name}-hint` : null, error ? `${name}-error` : null].filter(Boolean).join(" ");
+  const described = [
+    hint ? `${name}-hint` : null,
+    error ? `${name}-error` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
     <div className="grid gap-1.5">
       <Label htmlFor={name}>{label}</Label>
@@ -43,7 +49,11 @@ export function Field({
   );
 }
 
-export function FormError({ state }: { state: { error?: string; message?: string } }) {
+export function FormError({
+  state,
+}: {
+  state: { error?: string; message?: string };
+}) {
   if (state.error) {
     return (
       <p role="alert" className="text-sm text-destructive">

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { inject } from "vitest";
 
-/** The Supabase Data API (PostgREST) must not expose the finora schema. */
 describe("Supabase Data API exposure", () => {
   const { apiUrl, publishableKey, secretKey } = inject("local");
 
@@ -21,7 +20,9 @@ describe("Supabase Data API exposure", () => {
       const result = await get(`${table}?select=*`, key(), "finora");
       expect(result.status, table).toBeGreaterThanOrEqual(400);
       expect(result.body, table).toMatch(/schema/i);
-      expect(result.body, table).not.toMatch(/owner_id|disabled_at|amount_minor/);
+      expect(result.body, table).not.toMatch(
+        /owner_id|disabled_at|amount_minor/,
+      );
     }
   });
 

@@ -17,12 +17,8 @@ describe("isPublicPath", () => {
     "/auth/other",
     "/auth/callbackx",
     "/api/anything",
-    // Removed password flows must not stay reachable without authorisation.
     "/forgot-password",
     "/reset-password",
     "/auth/confirm",
-  ])(
-    "protects %s",
-    (path) => expect(isPublicPath(path)).toBe(false),
-  );
+  ])("protects %s", (path) => expect(isPublicPath(path)).toBe(false));
 });

@@ -5,10 +5,8 @@ import type { JournalLine } from "./types";
 
 declare const idempotencyKeyBrand: unique symbol;
 
-/** A client-chosen retry key; unique per owner (enforced by the database). */
 export type IdempotencyKey = string & { readonly [idempotencyKeyBrand]: true };
 
-/** Same rule as the `journal_entries_idempotency_key_format` CHECK. */
 const KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 export function parseIdempotencyKey(value: unknown): IdempotencyKey {
@@ -26,10 +24,6 @@ interface EntryContent {
   readonly lines: readonly JournalLine[];
 }
 
-/**
- * The operations a key can protect. A key replays only the operation it was
- * first used for, with the same content; anything else is a conflict.
- */
 export type IdempotentRequest =
   | ({ readonly kind: "create-draft" } & EntryContent)
   | ({ readonly kind: "post-entry" } & EntryContent)
@@ -59,21 +53,26 @@ function canonicalLines(lines: readonly JournalLine[]) {
 }
 
 function canonicalContent(content: EntryContent) {
-  return [content.entryDate, content.description, canonicalLines(content.lines)];
+  return [
+    content.entryDate,
+    content.description,
+    canonicalLines(content.lines),
+  ];
 }
 
-/**
- * A deterministic text form of a request, used to fingerprint it. Amounts are
- * exact minor units, so "1.5" and "1.50" are the same request; line order is
- * significant.
- */
 export function canonicalRequest(request: IdempotentRequest): string {
   switch (request.kind) {
     case "create-draft":
     case "post-entry":
       return JSON.stringify(["v1", request.kind, ...canonicalContent(request)]);
     case "reverse-entry":
-      return JSON.stringify(["v1", request.kind, request.entryId, request.entryDate, request.description]);
+      return JSON.stringify([
+        "v1",
+        request.kind,
+        request.entryId,
+        request.entryDate,
+        request.description,
+      ]);
     case "correct-entry":
       return JSON.stringify([
         "v1",

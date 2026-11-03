@@ -5,11 +5,6 @@ import type {
   OwnerDirectory,
 } from "./types";
 
-/**
- * Resolves the request's verified identity to an owner. Fails closed: no
- * identity → unauthenticated; no mapping or a disabled owner → forbidden.
- * Provider-agnostic, so it is unit-tested with fakes.
- */
 export async function authorizeOwner(deps: {
   identities: IdentityProvider;
   owners: OwnerDirectory;

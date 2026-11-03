@@ -26,11 +26,6 @@ export async function runInOwnerScope<T>(
   });
 }
 
-/**
- * Runs `fn` with only the verified auth identity as RLS context. Policies let
- * this context see exactly the matching identity mapping and its owner row;
- * it grants nothing on owner-scoped data.
- */
 export async function runInIdentityContext<T>(
   db: PrismaClient,
   identity: VerifiedIdentity,

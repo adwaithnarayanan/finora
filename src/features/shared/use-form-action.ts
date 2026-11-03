@@ -4,7 +4,6 @@ import { useActionState } from "react";
 
 import { type ActionState, INITIAL_STATE } from "./form-state";
 
-/** `useActionState` for a server action, with the per-field errors and echoed values forms read. */
 export function useFormAction(
   serverAction: (prev: ActionState, formData: FormData) => Promise<ActionState>,
   initialState: ActionState = INITIAL_STATE,

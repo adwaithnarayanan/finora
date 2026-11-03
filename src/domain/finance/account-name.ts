@@ -1,14 +1,9 @@
 // Account-name canonicalisation (ADR 0007). Deliberately import-free: the
-// operator script scripts/db/account-names.mjs imports this exact file
-// (Node type stripping), so the database checks use the same code as the app.
 
 declare const canonical: unique symbol;
 
-/** An account name in canonical form. Only `canonicalAccountName` makes one. */
 export interface AccountName {
-  /** Stored and shown: trimmed, then Unicode NFC. */
   readonly display: string;
-  /** Uniqueness (per owner) is decided on this: NFC(toLowerCase(display)). */
   readonly key: string;
   readonly [canonical]: true;
 }
@@ -24,5 +19,8 @@ export interface AccountName {
  */
 export function canonicalAccountName(input: string): AccountName {
   const display = input.trim().normalize("NFC");
-  return Object.freeze({ display, key: display.toLowerCase().normalize("NFC") }) as AccountName;
+  return Object.freeze({
+    display,
+    key: display.toLowerCase().normalize("NFC"),
+  }) as AccountName;
 }

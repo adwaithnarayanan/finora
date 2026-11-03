@@ -8,8 +8,14 @@ import {
   APPROVED_PASSWORD_EMAIL_KEY as SCRIPT_PASSWORD_KEY,
   passwordProblem,
 } from "../../scripts/lib/provisioning.mjs";
-import { promptHidden, readStdinSecret } from "../../scripts/lib/read-secret.mjs";
-import { APPROVED_GOOGLE_ID_KEY, APPROVED_PASSWORD_EMAIL_KEY } from "../../src/server/auth/supabase/identity";
+import {
+  promptHidden,
+  readStdinSecret,
+} from "../../scripts/lib/read-secret.mjs";
+import {
+  APPROVED_GOOGLE_ID_KEY,
+  APPROVED_PASSWORD_EMAIL_KEY,
+} from "../../src/server/auth/supabase/identity";
 import { ACTIVE_SIGN_IN_METHOD } from "../../src/server/auth/supabase/sign-in-method";
 
 describe("provisioning script stays in sync with the app", () => {
@@ -21,9 +27,12 @@ describe("provisioning script stays in sync with the app", () => {
 });
 
 describe("passwordProblem", () => {
-  it.each(["Correct-horse-9", "Abcdefghijk1", `Aa1${"x".repeat(69)}`])("accepts %s", (password) => {
-    expect(passwordProblem(password)).toBeNull();
-  });
+  it.each(["Correct-horse-9", "Abcdefghijk1", `Aa1${"x".repeat(69)}`])(
+    "accepts %s",
+    (password) => {
+      expect(passwordProblem(password)).toBeNull();
+    },
+  );
 
   it.each([
     ["too short", "Short-pass1"],
@@ -41,9 +50,15 @@ describe("passwordProblem", () => {
   });
 });
 
-/** A fake TTY: raw-mode capable input plus a captured output stream. */
 function fakeTerminal() {
-  const input = Object.assign(new PassThrough(), { isTTY: true, rawMode: false, setRawMode(on: boolean) { input.rawMode = on; return input; } });
+  const input = Object.assign(new PassThrough(), {
+    isTTY: true,
+    rawMode: false,
+    setRawMode(on: boolean) {
+      input.rawMode = on;
+      return input;
+    },
+  });
   const output = new PassThrough();
   let written = "";
   output.on("data", (chunk) => (written += String(chunk)));
@@ -53,9 +68,12 @@ function fakeTerminal() {
 describe("promptHidden", () => {
   it("returns what was typed without echoing it, and restores the terminal", async () => {
     const term = fakeTerminal();
-    const answer = promptHidden("Password: ", { input: term.input as never, output: term.output as never });
+    const answer = promptHidden("Password: ", {
+      input: term.input as never,
+      output: term.output as never,
+    });
     term.input.write("Secret-Pass");
-    term.input.write("\u007f"); // backspace
+    term.input.write("\u007f");
     term.input.write("s-1\r");
     await expect(answer).resolves.toBe("Secret-Pas" + "s-1");
     expect(term.written()).toBe("Password: \n");
@@ -64,16 +82,22 @@ describe("promptHidden", () => {
 
   it("can be cancelled with Ctrl-C", async () => {
     const term = fakeTerminal();
-    const answer = promptHidden("Password: ", { input: term.input as never, output: term.output as never });
+    const answer = promptHidden("Password: ", {
+      input: term.input as never,
+      output: term.output as never,
+    });
     term.input.write("abc\u0003");
     await expect(answer).rejects.toThrow("Cancelled.");
   });
 
   it("refuses to prompt without a terminal", async () => {
     const notATerminal = new PassThrough();
-    await expect(promptHidden("Password: ", { input: notATerminal as never, output: new PassThrough() as never })).rejects.toThrow(
-      /--password-stdin/,
-    );
+    await expect(
+      promptHidden("Password: ", {
+        input: notATerminal as never,
+        output: new PassThrough() as never,
+      }),
+    ).rejects.toThrow(/--password-stdin/);
   });
 });
 

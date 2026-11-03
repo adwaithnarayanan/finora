@@ -16,8 +16,8 @@ import type { LedgerStore } from "@/server/ledger/store";
 
 import type { ScopedTx } from "./scope";
 
-/** `@db.Date` columns arrive as UTC-midnight Dates. */
-const fromDate = (date: Date) => parseLedgerDate(date.toISOString().slice(0, 10));
+const fromDate = (date: Date) =>
+  parseLedgerDate(date.toISOString().slice(0, 10));
 
 const toCurrency = (row: { code: string; exponent: number }): Currency =>
   defineCurrency(row.code, row.exponent);
@@ -43,13 +43,9 @@ function toAccount(row: {
   });
 }
 
-const optionalId = (row: { id: string } | null) => (row ? parseJournalEntryId(row.id) : null);
+const optionalId = (row: { id: string } | null) =>
+  row ? parseJournalEntryId(row.id) : null;
 
-/**
- * Prisma implementation of the ledger store. Constructed per owner-scoped
- * transaction (see `withLedgerStore`); RLS filters every statement, and
- * inserts carry the same owner id the RLS context holds (WITH CHECK).
- */
 export class PrismaLedgerStore implements LedgerStore {
   constructor(
     private readonly tx: ScopedTx,
@@ -61,7 +57,9 @@ export class PrismaLedgerStore implements LedgerStore {
     return row ? toCurrency(row) : null;
   }
 
-  async findAccounts(ids: readonly LedgerAccountId[]): Promise<LedgerAccount[]> {
+  async findAccounts(
+    ids: readonly LedgerAccountId[],
+  ): Promise<LedgerAccount[]> {
     if (ids.length === 0) return [];
     const rows = await this.tx.ledgerAccount.findMany({
       where: { id: { in: [...ids] } },
@@ -82,7 +80,10 @@ export class PrismaLedgerStore implements LedgerStore {
       RETURNING id::text`;
     const id = inserted[0]?.id;
     if (!id) return null;
-    const row = await this.tx.ledgerAccount.findUniqueOrThrow({ where: { id }, select: accountSelect });
+    const row = await this.tx.ledgerAccount.findUniqueOrThrow({
+      where: { id },
+      select: accountSelect,
+    });
     return toAccount(row);
   }
 
@@ -94,8 +95,6 @@ export class PrismaLedgerStore implements LedgerStore {
     replacesEntryId?: JournalEntryId;
   }): Promise<JournalEntryId | null> {
     // ON CONFLICT waits for a concurrent insert of the same key to finish, then
-    // inserts nothing if it committed. Only the idempotency key is a conflict
-    // target; any other unique violation still raises.
     const inserted = await this.tx.$queryRaw<{ id: string }[]>`
       INSERT INTO finora.journal_entries
         (owner_id, entry_date, description, idempotency_key, idempotency_fingerprint,
@@ -113,11 +112,16 @@ export class PrismaLedgerStore implements LedgerStore {
     key: IdempotencyKey,
   ): Promise<{ id: JournalEntryId; fingerprint: string } | null> {
     const row = await this.tx.journalEntry.findUnique({
-      where: { ownerId_idempotencyKey: { ownerId: this.ownerId, idempotencyKey: key } },
+      where: {
+        ownerId_idempotencyKey: { ownerId: this.ownerId, idempotencyKey: key },
+      },
       select: { id: true, idempotencyFingerprint: true },
     });
     if (!row || row.idempotencyFingerprint === null) return null;
-    return { id: parseJournalEntryId(row.id), fingerprint: row.idempotencyFingerprint };
+    return {
+      id: parseJournalEntryId(row.id),
+      fingerprint: row.idempotencyFingerprint,
+    };
   }
 
   async findEntry(id: JournalEntryId): Promise<JournalEntry | null> {
@@ -126,7 +130,11 @@ export class PrismaLedgerStore implements LedgerStore {
       include: {
         lines: {
           orderBy: { lineNo: "asc" },
-          include: { account: { select: { currency: { select: { code: true, exponent: true } } } } },
+          include: {
+            account: {
+              select: { currency: { select: { code: true, exponent: true } } },
+            },
+          },
         },
         reversedBy: { select: { id: true } },
         replacedBy: { select: { id: true } },
@@ -137,7 +145,10 @@ export class PrismaLedgerStore implements LedgerStore {
       Object.freeze({
         accountId: parseLedgerAccountId(line.accountId),
         side: line.side,
-        amount: Money.ofMinor(line.amountMinor, toCurrency(line.account.currency)),
+        amount: Money.ofMinor(
+          line.amountMinor,
+          toCurrency(line.account.currency),
+        ),
         memo: line.memo,
       }),
     );
@@ -148,9 +159,13 @@ export class PrismaLedgerStore implements LedgerStore {
       description: row.description,
       lines: Object.freeze(lines),
       idempotencyKey: row.idempotencyKey,
-      reversesEntryId: row.reversesEntryId ? parseJournalEntryId(row.reversesEntryId) : null,
+      reversesEntryId: row.reversesEntryId
+        ? parseJournalEntryId(row.reversesEntryId)
+        : null,
       reversedByEntryId: optionalId(row.reversedBy),
-      replacesEntryId: row.replacesEntryId ? parseJournalEntryId(row.replacesEntryId) : null,
+      replacesEntryId: row.replacesEntryId
+        ? parseJournalEntryId(row.replacesEntryId)
+        : null,
       replacedByEntryId: optionalId(row.replacedBy),
       createdAt: row.createdAt,
       postedAt: row.postedAt,
@@ -163,7 +178,10 @@ export class PrismaLedgerStore implements LedgerStore {
     return locked.length === 0 ? null : this.findEntry(id);
   }
 
-  async replaceLines(entryId: JournalEntryId, lines: readonly JournalLine[]): Promise<void> {
+  async replaceLines(
+    entryId: JournalEntryId,
+    lines: readonly JournalLine[],
+  ): Promise<void> {
     await this.tx.journalLine.deleteMany({ where: { entryId } });
     if (lines.length === 0) return;
     await this.tx.journalLine.createMany({
@@ -188,14 +206,21 @@ export class PrismaLedgerStore implements LedgerStore {
     return count === 1;
   }
 
-  async postedTotals(accountId: LedgerAccountId): Promise<{ debits: bigint; credits: bigint }> {
+  async postedTotals(
+    accountId: LedgerAccountId,
+  ): Promise<{ debits: bigint; credits: bigint }> {
     // SUM over BIGINT yields NUMERIC (no overflow); read it back as text.
-    const [row] = await this.tx.$queryRaw<{ debits: string; credits: string }[]>`
+    const [row] = await this.tx.$queryRaw<
+      { debits: string; credits: string }[]
+    >`
       SELECT coalesce(sum(l.amount_minor) FILTER (WHERE l.side = 'debit'), 0)::text AS debits,
              coalesce(sum(l.amount_minor) FILTER (WHERE l.side = 'credit'), 0)::text AS credits
         FROM finora.journal_lines AS l
         JOIN finora.journal_entries AS e ON e.id = l.entry_id AND e.owner_id = l.owner_id
        WHERE l.account_id = ${accountId}::uuid AND e.status = 'posted'`;
-    return { debits: BigInt(row?.debits ?? "0"), credits: BigInt(row?.credits ?? "0") };
+    return {
+      debits: BigInt(row?.debits ?? "0"),
+      credits: BigInt(row?.credits ?? "0"),
+    };
   }
 }

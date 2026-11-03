@@ -7,7 +7,6 @@ import { createPrismaClient } from "@/server/db/client";
 
 import { purgeOwnerData } from "../../support/purge";
 
-/** Privileged connection (postgres, BYPASSRLS) for fixtures and catalog checks only. */
 export async function adminClient(): Promise<pg.Client> {
   const url = new URL(inject("local").migrationDatabaseUrl);
   url.search = "";
@@ -16,14 +15,14 @@ export async function adminClient(): Promise<pg.Client> {
   return client;
 }
 
-/** Raw connection as the runtime role, exactly as the app connects. */
 export async function appClient(): Promise<pg.Client> {
-  const client = new pg.Client({ connectionString: inject("local").appDatabaseUrl });
+  const client = new pg.Client({
+    connectionString: inject("local").appDatabaseUrl,
+  });
   await client.connect();
   return client;
 }
 
-/** The app's Prisma client, connected as finora_app with a single connection. */
 export function appPrisma() {
   return createPrismaClient(inject("local").appDatabaseUrl, 1);
 }
@@ -49,12 +48,19 @@ export async function seedOwner(
   return { ownerId, subject };
 }
 
-/** See tests/support/purge.ts (LOCAL-ONLY trigger bypass for test cleanup). */
 export const purgeLedger = purgeOwnerData;
 
-export async function deleteOwners(admin: pg.Client, ownerIds: string[]): Promise<void> {
+export async function deleteOwners(
+  admin: pg.Client,
+  ownerIds: string[],
+): Promise<void> {
   if (ownerIds.length === 0) return;
   await purgeLedger(admin, ownerIds);
-  await admin.query(`DELETE FROM finora.owner_identities WHERE owner_id = ANY($1::uuid[])`, [ownerIds]);
-  await admin.query(`DELETE FROM finora.owners WHERE id = ANY($1::uuid[])`, [ownerIds]);
+  await admin.query(
+    `DELETE FROM finora.owner_identities WHERE owner_id = ANY($1::uuid[])`,
+    [ownerIds],
+  );
+  await admin.query(`DELETE FROM finora.owners WHERE id = ANY($1::uuid[])`, [
+    ownerIds,
+  ]);
 }

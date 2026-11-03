@@ -3,25 +3,27 @@ import { type Currency, Money, MoneyError, sameCurrency } from "@/domain/money";
 import { LedgerValidationError } from "./errors";
 import { parseMemo } from "./fields";
 import { isLedgerAccountId } from "./ids";
-import { type JournalLine, type LedgerAccount, SIDES, type Side } from "./types";
+import {
+  type JournalLine,
+  type LedgerAccount,
+  SIDES,
+  type Side,
+} from "./types";
 
-/** Upper bound on lines per entry; keeps validation and storage bounded. */
 export const MAX_LINES_PER_ENTRY = 200;
 
-/** Largest amount one line can hold: PostgreSQL BIGINT. */
 export const MAX_LINE_AMOUNT_MINOR = 9_223_372_036_854_775_807n;
 
-/**
- * A problem with an entry's lines. `line` is the zero-based index of the
- * offending line. Unknown and foreign accounts are deliberately reported the
- * same way (`unknown-account`), so another owner's ids reveal nothing.
- */
 export type LedgerIssue =
   | { readonly code: "no-lines" }
   | { readonly code: "too-many-lines"; readonly max: number }
   | { readonly code: "unknown-account"; readonly line: number }
   | { readonly code: "invalid-side"; readonly line: number }
-  | { readonly code: "invalid-amount"; readonly line: number; readonly reason: string }
+  | {
+      readonly code: "invalid-amount";
+      readonly line: number;
+      readonly reason: string;
+    }
   | { readonly code: "non-positive-amount"; readonly line: number }
   | { readonly code: "amount-too-large"; readonly line: number }
   | { readonly code: "invalid-memo"; readonly line: number }
@@ -38,12 +40,6 @@ export type LedgerIssue =
       readonly credits: string;
     };
 
-/**
- * A line as a caller supplies it. The amount is a decimal string in major
- * units (parsed exactly by the money module) and the currency is explicit:
- * it must equal the account's currency, so a caller can never have an amount
- * silently reinterpreted.
- */
 export interface JournalLineInput {
   readonly accountId: string;
   readonly side: string;
@@ -60,17 +56,23 @@ function isSide(value: unknown): value is Side {
 
 function countIssues(count: number): LedgerIssue[] {
   if (count === 0) return [{ code: "no-lines" }];
-  if (count > MAX_LINES_PER_ENTRY) return [{ code: "too-many-lines", max: MAX_LINES_PER_ENTRY }];
+  if (count > MAX_LINES_PER_ENTRY)
+    return [{ code: "too-many-lines", max: MAX_LINES_PER_ENTRY }];
   return [];
 }
 
 function amountIssues(amount: Money, line: number): LedgerIssue[] {
   if (!amount.isPositive()) return [{ code: "non-positive-amount", line }];
-  if (amount.minor > MAX_LINE_AMOUNT_MINOR) return [{ code: "amount-too-large", line }];
+  if (amount.minor > MAX_LINE_AMOUNT_MINOR)
+    return [{ code: "amount-too-large", line }];
   return [];
 }
 
-function currencyIssues(actual: Currency, account: LedgerAccount, line: number): LedgerIssue[] {
+function currencyIssues(
+  actual: Currency,
+  account: LedgerAccount,
+  line: number,
+): LedgerIssue[] {
   return sameCurrency(actual, account.currency)
     ? []
     : [
@@ -83,11 +85,6 @@ function currencyIssues(actual: Currency, account: LedgerAccount, line: number):
       ];
 }
 
-/**
- * Turns caller input into journal lines, checking each line on its own
- * (account, side, currency, amount, memo). Balance is not required: drafts may
- * be unbalanced. Throws {@link LedgerValidationError} listing every issue.
- */
 export function buildLines(
   inputs: readonly JournalLineInput[],
   accounts: AccountLookup,
@@ -97,7 +94,9 @@ export function buildLines(
 
   const lines: JournalLine[] = [];
   inputs.forEach((input, line) => {
-    const account = isLedgerAccountId(input.accountId) ? accounts.get(input.accountId) : undefined;
+    const account = isLedgerAccountId(input.accountId)
+      ? accounts.get(input.accountId)
+      : undefined;
     if (!account) {
       issues.push({ code: "unknown-account", line });
       return;
@@ -135,14 +134,15 @@ export function buildLines(
       issues.push({ code: "invalid-memo", line });
       return;
     }
-    lines.push(Object.freeze({ accountId: account.id, side: input.side, amount, memo }));
+    lines.push(
+      Object.freeze({ accountId: account.id, side: input.side, amount, memo }),
+    );
   });
 
   if (issues.length > 0) throw new LedgerValidationError(issues);
   return lines;
 }
 
-/** Checks already-constructed lines against their accounts (structure only). */
 export function structuralIssues(
   lines: readonly JournalLine[],
   accounts: AccountLookup,
@@ -167,11 +167,9 @@ export interface CurrencyTotals {
   readonly credits: Money;
 }
 
-/**
- * Sums debits and credits separately for each currency, in order of first
- * appearance. Currencies are compared by code and exponent.
- */
-export function totalsByCurrency(lines: readonly JournalLine[]): CurrencyTotals[] {
+export function totalsByCurrency(
+  lines: readonly JournalLine[],
+): CurrencyTotals[] {
   const totals = new Map<string, CurrencyTotals>();
   for (const line of lines) {
     const { currency } = line.amount;
@@ -183,14 +181,19 @@ export function totalsByCurrency(lines: readonly JournalLine[]): CurrencyTotals[
     };
     totals.set(key, {
       currency,
-      debits: line.side === "debit" ? current.debits.add(line.amount) : current.debits,
-      credits: line.side === "credit" ? current.credits.add(line.amount) : current.credits,
+      debits:
+        line.side === "debit"
+          ? current.debits.add(line.amount)
+          : current.debits,
+      credits:
+        line.side === "credit"
+          ? current.credits.add(line.amount)
+          : current.credits,
     });
   }
   return [...totals.values()];
 }
 
-/** One `unbalanced` issue for each currency whose debits and credits differ. */
 export function balanceIssues(lines: readonly JournalLine[]): LedgerIssue[] {
   return totalsByCurrency(lines)
     .filter((t) => !t.debits.equals(t.credits))
@@ -202,7 +205,6 @@ export function balanceIssues(lines: readonly JournalLine[]): LedgerIssue[] {
     }));
 }
 
-/** Every issue that would stop these lines from being posted. */
 export function postingIssues(
   lines: readonly JournalLine[],
   accounts: AccountLookup,
@@ -211,8 +213,10 @@ export function postingIssues(
   return issues.length > 0 ? issues : balanceIssues(lines);
 }
 
-/** Throws {@link LedgerValidationError} unless the lines can be posted. */
-export function assertPostable(lines: readonly JournalLine[], accounts: AccountLookup): void {
+export function assertPostable(
+  lines: readonly JournalLine[],
+  accounts: AccountLookup,
+): void {
   const issues = postingIssues(lines, accounts);
   if (issues.length > 0) throw new LedgerValidationError(issues);
 }

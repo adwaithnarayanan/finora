@@ -5,10 +5,6 @@ import { AppNav, AppNavFallback } from "@/features/app/nav";
 import { SignOutButton } from "@/features/auth/sign-out-button";
 import { requireOwner } from "@/server/auth/session";
 
-/**
- * Shell for owner-only routes. The layout check is not the security boundary:
- * each page and every data access calls requireOwner() / withOwnerScope().
- */
 export default function AppLayout({ children }: LayoutProps<"/">) {
   return (
     <div className="relative flex flex-1 flex-col overflow-hidden">
@@ -31,7 +27,8 @@ export default function AppLayout({ children }: LayoutProps<"/">) {
         {children}
       </main>
       <footer className="relative mx-auto w-full max-w-5xl border-t px-4 py-6 text-xs text-muted-foreground sm:px-6">
-        Finora · amounts in en-IN format; balances are derived from the double-entry ledger
+        Finora · amounts in en-IN format; balances are derived from the
+        double-entry ledger
       </footer>
     </div>
   );

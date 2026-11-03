@@ -7,34 +7,21 @@ import {
 } from "./errors";
 import { type RoundingMode, divideAndRound, pow10 } from "./rounding";
 
-/** Plain decimal: optional minus, digits, optional fraction. No "+", exponents, grouping or whitespace. */
 const DECIMAL_PATTERN = /^(-?)(\d+)(?:\.(\d+))?$/;
 
-/** Inputs longer than this are rejected before parsing to keep work bounded. */
 export const MAX_DECIMAL_INPUT_LENGTH = 64;
 
-/** Upper bound for allocateEvenly() so a bad count cannot build a huge array. */
 export const MAX_ALLOCATION_PARTS = 10_000;
 
 export interface ParseOptions {
-  /**
-   * How to treat digits beyond the currency's exponent. When omitted, such input
-   * is rejected with {@link PrecisionError}; inputs are never rounded implicitly.
-   */
   readonly rounding?: RoundingMode;
 }
 
 export interface FormatOptions {
-  /** BCP 47 locale; defaults to en-IN (lakh/crore grouping). */
   readonly locale?: string;
   readonly currencyDisplay?: "symbol" | "narrowSymbol" | "code" | "name";
 }
 
-/**
- * An exact monetary amount: an integer count of minor units (`bigint`) in a
- * single currency. Immutable. There is deliberately no constructor or factory
- * that accepts a JavaScript `number` as an amount.
- */
 export class Money {
   readonly minor: bigint;
   readonly currency: Currency;
@@ -45,7 +32,6 @@ export class Money {
     Object.freeze(this);
   }
 
-  /** Creates money from an integer number of minor units (e.g. paise for INR). */
   static ofMinor(minor: bigint, currency: Currency): Money {
     if (typeof minor !== "bigint") {
       throw new InvalidAmountError(
@@ -59,11 +45,6 @@ export class Money {
     return new Money(0n, currency);
   }
 
-  /**
-   * Parses a plain decimal string such as "1234.50" or "-0.05" exactly.
-   * Trailing zeros beyond the exponent ("1.500" for INR) are exact and accepted;
-   * any other excess precision needs an explicit {@link ParseOptions.rounding}.
-   */
   static parse(
     input: string,
     currency: Currency,
@@ -126,7 +107,6 @@ export class Money {
     return new Money(-this.minor, this.currency);
   }
 
-  /** Returns -1, 0 or 1. */
   compare(other: Money): -1 | 0 | 1 {
     this.assertSameCurrency(other);
     if (this.minor < other.minor) return -1;
@@ -206,7 +186,6 @@ export class Money {
     return shares.map((share) => new Money(share, this.currency));
   }
 
-  /** Splits into `parts` near-equal shares; earlier shares absorb any remainder. */
   allocateEvenly(parts: number): Money[] {
     if (
       !Number.isSafeInteger(parts) ||
@@ -220,7 +199,6 @@ export class Money {
     return this.allocate(Array.from({ length: parts }, () => 1n));
   }
 
-  /** Canonical exact decimal, e.g. "-1234.50". Suitable for storage, CSV and APIs. */
   toDecimalString(): string {
     const { exponent } = this.currency;
     const negative = this.minor < 0n;
@@ -232,10 +210,6 @@ export class Money {
     return `${sign}${digits.slice(0, -exponent)}.${digits.slice(-exponent)}`;
   }
 
-  /**
-   * Locale-aware display string. The exact decimal string is handed to
-   * Intl.NumberFormat, which formats string input without a float conversion.
-   */
   format(options: FormatOptions = {}): string {
     const formatter = new Intl.NumberFormat(options.locale ?? "en-IN", {
       style: "currency",

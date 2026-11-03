@@ -1,10 +1,3 @@
-/**
- * Rounding policies for operations that explicitly ask for one.
- * - half-even: ties go to the even neighbour (banker's rounding)
- * - half-away-from-zero: ties go away from zero (commercial rounding)
- * - toward-zero: truncate
- * - floor / ceiling: toward negative / positive infinity
- */
 export const ROUNDING_MODES = [
   "half-even",
   "half-away-from-zero",
@@ -19,7 +12,6 @@ export function pow10(exponent: number): bigint {
   return 10n ** BigInt(exponent);
 }
 
-/** Integer division of `value` by a positive `divisor`, rounded with `mode`. */
 export function divideAndRound(
   value: bigint,
   divisor: bigint,

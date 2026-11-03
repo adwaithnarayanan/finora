@@ -3,24 +3,35 @@ import { randomUUID } from "node:crypto";
 import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 
-import { DEFAULT_CATEGORIES, FinanceValidationError, canonicalAccountName } from "@/domain/finance";
+import {
+  DEFAULT_CATEGORIES,
+  FinanceValidationError,
+  canonicalAccountName,
+} from "@/domain/finance";
 import { parseLedgerDate } from "@/domain/ledger";
 import type { OwnerId } from "@/domain/owner";
 import type { AuthorizedOwner } from "@/server/auth/types";
 import { createPrismaClient } from "@/server/db/client";
 import { PrismaFinanceStore } from "@/server/db/finance-store";
 import { runInOwnerScope } from "@/server/db/scope";
-import { FinanceConflictError, FinanceNotFoundError } from "@/server/finance/errors";
+import {
+  FinanceConflictError,
+  FinanceNotFoundError,
+} from "@/server/finance/errors";
 import type { FinanceStore } from "@/server/finance/store";
-import { IdempotencyConflictError, LedgerIntegrityError } from "@/server/ledger/errors";
+import {
+  IdempotencyConflictError,
+  LedgerIntegrityError,
+} from "@/server/ledger/errors";
 
-import { adminClient, appPrisma, deleteOwners, seedOwner, type SeededOwner } from "./support/db";
+import {
+  adminClient,
+  appPrisma,
+  deleteOwners,
+  seedOwner,
+  type SeededOwner,
+} from "./support/db";
 import { authorize, financeFor } from "./support/ledger";
-
-/**
- * Accounts, categories and transactions end to end against real PostgreSQL,
- * as finora_app, with the production stores and owner scope.
- */
 
 const prisma = appPrisma();
 const finance = financeFor(prisma);
@@ -34,8 +45,17 @@ const extraOwners: string[] = [];
 const key = () => randomUUID();
 const today = "2026-10-25";
 
-async function account(owner: AuthorizedOwner, name: string, extra: Record<string, unknown> = {}) {
-  const { value } = await finance.createAccount(owner, { name, type: "bank", idempotencyKey: key(), ...extra });
+async function account(
+  owner: AuthorizedOwner,
+  name: string,
+  extra: Record<string, unknown> = {},
+) {
+  const { value } = await finance.createAccount(owner, {
+    name,
+    type: "bank",
+    idempotencyKey: key(),
+    ...extra,
+  });
   return value;
 }
 
@@ -43,12 +63,18 @@ async function balanceOf(owner: AuthorizedOwner, id: string) {
   return (await finance.getAccount(owner, id)).balance.toDecimalString();
 }
 
-async function category(owner: AuthorizedOwner, name: string, kind: "income" | "expense") {
+async function category(
+  owner: AuthorizedOwner,
+  name: string,
+  kind: "income" | "expense",
+) {
   const all = await finance.listCategories(owner);
-  return all.find((c) => c.name === name && c.kind === kind) ?? finance.createCategory(owner, { name, kind });
+  return (
+    all.find((c) => c.name === name && c.kind === kind) ??
+    finance.createCategory(owner, { name, kind })
+  );
 }
 
-/** Journal lines of an entry as [ledger account kind, side, amount]. */
 async function lines(entryId: string) {
   const { rows } = await admin.query(
     `SELECT la.kind::text AS kind, l.side::text AS side, l.amount_minor::text AS amount, la.currency_code AS currency
@@ -67,7 +93,12 @@ async function counts(ownerId: string) {
             (SELECT count(*) FROM finora.ledger_accounts WHERE owner_id = $1)::int AS ledger_accounts`,
     [ownerId],
   );
-  return rows[0] as { transactions: number; entries: number; accounts: number; ledger_accounts: number };
+  return rows[0] as {
+    transactions: number;
+    entries: number;
+    accounts: number;
+    ledger_accounts: number;
+  };
 }
 
 beforeAll(async () => {
@@ -81,21 +112,40 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await deleteOwners(admin, [...[seededA, seededB].filter(Boolean).map((o) => o.ownerId), ...extraOwners]);
+  await deleteOwners(admin, [
+    ...[seededA, seededB].filter(Boolean).map((o) => o.ownerId),
+    ...extraOwners,
+  ]);
   await admin.end();
   await prisma.$disconnect();
 });
 
 describe("accounts", () => {
   it("creates an INR bank account with an opening balance posted to opening-balance equity", async () => {
-    const created = await account(ownerA, "HDFC Savings", { openingBalance: { amount: "25000.50", date: "2026-10-01" } });
-    expect(created).toMatchObject({ name: "HDFC Savings", type: "bank", currency: { code: "INR", exponent: 2 }, archivedAt: null });
+    const created = await account(ownerA, "HDFC Savings", {
+      openingBalance: { amount: "25000.50", date: "2026-10-01" },
+    });
+    expect(created).toMatchObject({
+      name: "HDFC Savings",
+      type: "bank",
+      currency: { code: "INR", exponent: 2 },
+      archivedAt: null,
+    });
     const detail = await finance.getAccount(ownerA, created.id);
     expect(detail.balance.toDecimalString()).toBe("25000.50");
     expect(detail.hasHistory).toBe(true);
-    expect(detail.lifecycle).toEqual({ canTransact: true, canArchive: true, canRestore: false, canDelete: false });
+    expect(detail.lifecycle).toEqual({
+      canTransact: true,
+      canArchive: true,
+      canRestore: false,
+      canDelete: false,
+    });
     const opening = detail.openingBalance!;
-    expect(opening).toMatchObject({ kind: "opening_balance", occurredOn: "2026-10-01", destinationAccountId: created.id });
+    expect(opening).toMatchObject({
+      kind: "opening_balance",
+      occurredOn: "2026-10-01",
+      destinationAccountId: created.id,
+    });
     expect(await lines(opening.journalEntryId)).toEqual([
       ["asset", "debit", "2500050", "INR"],
       ["equity", "credit", "2500050", "INR"],
@@ -104,23 +154,47 @@ describe("accounts", () => {
 
   it("creates accounts without an opening balance, in other currencies, and validates input", async () => {
     const empty = await account(ownerA, "Wallet", { type: "cash" });
-    expect((await finance.getAccount(ownerA, empty.id)).balance.toDecimalString()).toBe("0.00");
+    expect(
+      (await finance.getAccount(ownerA, empty.id)).balance.toDecimalString(),
+    ).toBe("0.00");
     const usd = await account(ownerA, "USD account", { currency: "USD" });
     expect(usd.currency.code).toBe("USD");
-    await expect(account(ownerA, "Gold", { currency: "XAU" })).rejects.toThrow(FinanceValidationError);
-    await expect(account(ownerA, "  ", { type: "loan" })).rejects.toMatchObject({
-      issues: [expect.objectContaining({ field: "name" }), expect.objectContaining({ field: "type" })],
-    });
-    await expect(account(ownerA, "wallet")).rejects.toThrow(FinanceConflictError); // names are case-insensitive
+    await expect(account(ownerA, "Gold", { currency: "XAU" })).rejects.toThrow(
+      FinanceValidationError,
+    );
+    await expect(account(ownerA, "  ", { type: "loan" })).rejects.toMatchObject(
+      {
+        issues: [
+          expect.objectContaining({ field: "name" }),
+          expect.objectContaining({ field: "type" }),
+        ],
+      },
+    );
+    await expect(account(ownerA, "wallet")).rejects.toThrow(
+      FinanceConflictError,
+    );
     await expect(
-      account(ownerA, "Bad opening", { openingBalance: { amount: "10.555", date: today } }),
-    ).rejects.toMatchObject({ issues: [expect.objectContaining({ field: "openingAmount" })] });
-    expect((await finance.listAccounts(ownerA)).some((a) => a.account.name === "Bad opening")).toBe(false);
+      account(ownerA, "Bad opening", {
+        openingBalance: { amount: "10.555", date: today },
+      }),
+    ).rejects.toMatchObject({
+      issues: [expect.objectContaining({ field: "openingAmount" })],
+    });
+    expect(
+      (await finance.listAccounts(ownerA)).some(
+        (a) => a.account.name === "Bad opening",
+      ),
+    ).toBe(false);
   });
 
   it("is idempotent: a retry returns the same account, a changed retry is refused", async () => {
     const k = key();
-    const input = { name: "Retry bank", type: "bank", openingBalance: { amount: "100", date: today }, idempotencyKey: k };
+    const input = {
+      name: "Retry bank",
+      type: "bank",
+      openingBalance: { amount: "100", date: today },
+      idempotencyKey: k,
+    };
     const before = await counts(seededA.ownerId);
     const first = await finance.createAccount(ownerA, input);
     const second = await finance.createAccount(ownerA, input);
@@ -128,18 +202,32 @@ describe("accounts", () => {
     const after = await counts(seededA.ownerId);
     expect(after.accounts - before.accounts).toBe(1);
     expect(after.entries - before.entries).toBe(1);
-    await expect(finance.createAccount(ownerA, { ...input, name: "Other name" })).rejects.toThrow(IdempotencyConflictError);
+    await expect(
+      finance.createAccount(ownerA, { ...input, name: "Other name" }),
+    ).rejects.toThrow(IdempotencyConflictError);
   });
 
   it("edits name and type only, archives, restores, and never changes the currency or ledger link", async () => {
     const created = await account(ownerA, "Editable");
-    await finance.updateAccount(ownerA, created.id, { name: "Edited", type: "cash" });
+    await finance.updateAccount(ownerA, created.id, {
+      name: "Edited",
+      type: "cash",
+    });
     const edited = (await finance.getAccount(ownerA, created.id)).account;
-    expect(edited).toMatchObject({ name: "Edited", type: "cash", currency: created.currency, ledgerAccountId: created.ledgerAccountId });
+    expect(edited).toMatchObject({
+      name: "Edited",
+      type: "cash",
+      currency: created.currency,
+      ledgerAccountId: created.ledgerAccountId,
+    });
     await finance.archiveAccount(ownerA, created.id);
-    expect((await finance.getAccount(ownerA, created.id)).lifecycle.canTransact).toBe(false);
+    expect(
+      (await finance.getAccount(ownerA, created.id)).lifecycle.canTransact,
+    ).toBe(false);
     await finance.restoreAccount(ownerA, created.id);
-    expect((await finance.getAccount(ownerA, created.id)).account.archivedAt).toBeNull();
+    expect(
+      (await finance.getAccount(ownerA, created.id)).account.archivedAt,
+    ).toBeNull();
   });
 
   it("deletes only accounts without history, removing the unused ledger account too", async () => {
@@ -147,11 +235,19 @@ describe("accounts", () => {
     const unused = await account(ownerA, "Mistake");
     await finance.deleteAccount(ownerA, unused.id);
     expect(await counts(seededA.ownerId)).toEqual(before);
-    await expect(finance.getAccount(ownerA, unused.id)).rejects.toThrow(FinanceNotFoundError);
+    await expect(finance.getAccount(ownerA, unused.id)).rejects.toThrow(
+      FinanceNotFoundError,
+    );
 
-    const used = await account(ownerA, "Used", { openingBalance: { amount: "1", date: today } });
-    await expect(finance.deleteAccount(ownerA, used.id)).rejects.toMatchObject({ reason: "account-has-history" });
-    expect((await finance.getAccount(ownerA, used.id)).balance.toDecimalString()).toBe("1.00");
+    const used = await account(ownerA, "Used", {
+      openingBalance: { amount: "1", date: today },
+    });
+    await expect(finance.deleteAccount(ownerA, used.id)).rejects.toMatchObject({
+      reason: "account-has-history",
+    });
+    expect(
+      (await finance.getAccount(ownerA, used.id)).balance.toDecimalString(),
+    ).toBe("1.00");
   });
 });
 
@@ -160,7 +256,9 @@ describe("transactions", () => {
   let cash: Awaited<ReturnType<typeof account>>;
 
   beforeAll(async () => {
-    bank = await account(ownerA, "Primary bank", { openingBalance: { amount: "10000", date: "2026-10-01" } });
+    bank = await account(ownerA, "Primary bank", {
+      openingBalance: { amount: "10000", date: "2026-10-01" },
+    });
     cash = await account(ownerA, "Pocket cash", { type: "cash" });
   });
 
@@ -177,7 +275,12 @@ describe("transactions", () => {
       idempotencyKey: key(),
     });
     expect(replayed).toBe(false);
-    expect(value).toMatchObject({ kind: "income", payee: "Acme Ltd", note: "October salary", categoryId: salary.id });
+    expect(value).toMatchObject({
+      kind: "income",
+      payee: "Acme Ltd",
+      note: "October salary",
+      categoryId: salary.id,
+    });
     expect(value.amount.toDecimalString()).toBe("50000.00");
     expect(await lines(value.journalEntryId)).toEqual([
       ["asset", "debit", "5000000", "INR"],
@@ -226,23 +329,95 @@ describe("transactions", () => {
   it("rejects invalid intents before anything is written", async () => {
     const salary = await category(ownerA, "Salary", "income");
     const groceries = await category(ownerA, "Groceries", "expense");
-    const usd = await account(ownerA, "USD wallet", { currency: "USD", type: "cash" });
+    const usd = await account(ownerA, "USD wallet", {
+      currency: "USD",
+      type: "cash",
+    });
     const before = await counts(seededA.ownerId);
     const attempts: [string, Record<string, unknown>, string][] = [
-      ["zero amount", { kind: "income", amount: "0", destinationAccountId: bank.id, categoryId: salary.id }, "amount"],
-      ["float syntax", { kind: "income", amount: "1e3", destinationAccountId: bank.id, categoryId: salary.id }, "amount"],
-      ["too precise", { kind: "income", amount: "1.001", destinationAccountId: bank.id, categoryId: salary.id }, "amount"],
-      ["wrong category kind", { kind: "income", amount: "1", destinationAccountId: bank.id, categoryId: groceries.id }, "categoryId"],
-      ["unknown account", { kind: "expense", amount: "1", sourceAccountId: randomUUID(), categoryId: groceries.id }, "sourceAccountId"],
-      ["same-account transfer", { kind: "transfer", amount: "1", sourceAccountId: bank.id, destinationAccountId: bank.id }, "destinationAccountId"],
-      ["currency mismatch", { kind: "transfer", amount: "1", sourceAccountId: bank.id, destinationAccountId: usd.id }, "destinationAccountId"],
+      [
+        "zero amount",
+        {
+          kind: "income",
+          amount: "0",
+          destinationAccountId: bank.id,
+          categoryId: salary.id,
+        },
+        "amount",
+      ],
+      [
+        "float syntax",
+        {
+          kind: "income",
+          amount: "1e3",
+          destinationAccountId: bank.id,
+          categoryId: salary.id,
+        },
+        "amount",
+      ],
+      [
+        "too precise",
+        {
+          kind: "income",
+          amount: "1.001",
+          destinationAccountId: bank.id,
+          categoryId: salary.id,
+        },
+        "amount",
+      ],
+      [
+        "wrong category kind",
+        {
+          kind: "income",
+          amount: "1",
+          destinationAccountId: bank.id,
+          categoryId: groceries.id,
+        },
+        "categoryId",
+      ],
+      [
+        "unknown account",
+        {
+          kind: "expense",
+          amount: "1",
+          sourceAccountId: randomUUID(),
+          categoryId: groceries.id,
+        },
+        "sourceAccountId",
+      ],
+      [
+        "same-account transfer",
+        {
+          kind: "transfer",
+          amount: "1",
+          sourceAccountId: bank.id,
+          destinationAccountId: bank.id,
+        },
+        "destinationAccountId",
+      ],
+      [
+        "currency mismatch",
+        {
+          kind: "transfer",
+          amount: "1",
+          sourceAccountId: bank.id,
+          destinationAccountId: usd.id,
+        },
+        "destinationAccountId",
+      ],
       ["unknown kind", { kind: "refund", amount: "1" }, "kind"],
     ];
     for (const [label, input, field] of attempts) {
       await expect(
-        finance.recordTransaction(ownerA, { date: today, idempotencyKey: key(), ...input }),
+        finance.recordTransaction(ownerA, {
+          date: today,
+          idempotencyKey: key(),
+          ...input,
+        }),
         label,
-      ).rejects.toMatchObject({ issues: expect.arrayContaining([expect.objectContaining({ field })]) });
+      ).rejects.toMatchObject({
+        issues: expect.arrayContaining([expect.objectContaining({ field })]),
+      });
     }
     const after = await counts(seededA.ownerId);
     expect(after.transactions).toBe(before.transactions);
@@ -262,12 +437,21 @@ describe("transactions", () => {
         categoryId: salary.id,
         idempotencyKey: key(),
       }),
-    ).rejects.toMatchObject({ issues: [expect.objectContaining({ field: "destinationAccountId" })] });
+    ).rejects.toMatchObject({
+      issues: [expect.objectContaining({ field: "destinationAccountId" })],
+    });
     await expect(
-      finance.setOpeningBalance(ownerA, archived.id, { amount: "5", date: today, idempotencyKey: key() }),
+      finance.setOpeningBalance(ownerA, archived.id, {
+        amount: "5",
+        date: today,
+        idempotencyKey: key(),
+      }),
     ).rejects.toThrow(FinanceValidationError);
 
-    const temp = await finance.createCategory(ownerA, { name: `Temp ${randomUUID().slice(0, 6)}`, kind: "income" });
+    const temp = await finance.createCategory(ownerA, {
+      name: `Temp ${randomUUID().slice(0, 6)}`,
+      kind: "income",
+    });
     await finance.setCategoryArchived(ownerA, temp.id, true);
     await expect(
       finance.recordTransaction(ownerA, {
@@ -278,19 +462,31 @@ describe("transactions", () => {
         categoryId: temp.id,
         idempotencyKey: key(),
       }),
-    ).rejects.toMatchObject({ issues: [expect.objectContaining({ field: "categoryId" })] });
+    ).rejects.toMatchObject({
+      issues: [expect.objectContaining({ field: "categoryId" })],
+    });
   });
 
   it("is idempotent: a retried request records nothing new; a changed retry is refused", async () => {
     const salary = await category(ownerA, "Salary", "income");
     const k = key();
-    const input = { kind: "income", amount: "10", date: today, destinationAccountId: cash.id, categoryId: salary.id, note: "tip", idempotencyKey: k };
+    const input = {
+      kind: "income",
+      amount: "10",
+      date: today,
+      destinationAccountId: cash.id,
+      categoryId: salary.id,
+      note: "tip",
+      idempotencyKey: k,
+    };
     const before = await balanceOf(ownerA, cash.id);
     const first = await finance.recordTransaction(ownerA, input);
     const second = await finance.recordTransaction(ownerA, input);
     expect(second).toEqual({ value: first.value, replayed: true });
     expect(Number(await balanceOf(ownerA, cash.id)) - Number(before)).toBe(10);
-    await expect(finance.recordTransaction(ownerA, { ...input, note: "different" })).rejects.toThrow(IdempotencyConflictError);
+    await expect(
+      finance.recordTransaction(ownerA, { ...input, note: "different" }),
+    ).rejects.toThrow(IdempotencyConflictError);
   });
 
   it("voids through a ledger reversal, once, keeping the original in history", async () => {
@@ -305,7 +501,10 @@ describe("transactions", () => {
       idempotencyKey: key(),
     });
     const k = key();
-    const { value: voided } = await finance.voidTransaction(ownerA, spent.id, { date: today, idempotencyKey: k });
+    const { value: voided } = await finance.voidTransaction(ownerA, spent.id, {
+      date: today,
+      idempotencyKey: k,
+    });
     expect(voided.voidedAt).toBeInstanceOf(Date);
     expect(voided.reversalEntryId).not.toBeNull();
     expect(await balanceOf(ownerA, bank.id)).toBe(before);
@@ -313,15 +512,32 @@ describe("transactions", () => {
       ["expense", "credit", "50000", "INR"],
       ["asset", "debit", "50000", "INR"],
     ]);
-    expect(await finance.voidTransaction(ownerA, spent.id, { date: today, idempotencyKey: k })).toMatchObject({ replayed: true });
-    await expect(finance.voidTransaction(ownerA, spent.id, { date: today, idempotencyKey: key() })).rejects.toMatchObject({
+    expect(
+      await finance.voidTransaction(ownerA, spent.id, {
+        date: today,
+        idempotencyKey: k,
+      }),
+    ).toMatchObject({ replayed: true });
+    await expect(
+      finance.voidTransaction(ownerA, spent.id, {
+        date: today,
+        idempotencyKey: key(),
+      }),
+    ).rejects.toMatchObject({
       reason: "already-voided",
     });
-    const history = await finance.listTransactions(ownerA, { accountId: bank.id });
-    expect(history.find((t) => t.id === spent.id)?.voidedAt).toBeInstanceOf(Date);
-    expect(await finance.listTransactions(ownerA, { accountId: bank.id, includeVoided: false })).not.toContainEqual(
-      expect.objectContaining({ id: spent.id }),
+    const history = await finance.listTransactions(ownerA, {
+      accountId: bank.id,
+    });
+    expect(history.find((t) => t.id === spent.id)?.voidedAt).toBeInstanceOf(
+      Date,
     );
+    expect(
+      await finance.listTransactions(ownerA, {
+        accountId: bank.id,
+        includeVoided: false,
+      }),
+    ).not.toContainEqual(expect.objectContaining({ id: spent.id }));
   });
 
   it("edits payee and note only, without touching the accounting effect", async () => {
@@ -336,9 +552,16 @@ describe("transactions", () => {
       idempotencyKey: key(),
     });
     const entryLines = await lines(value.journalEntryId);
-    await finance.updateTransactionDetails(ownerA, value.id, { payee: "New payee", note: "Fixed typo" });
+    await finance.updateTransactionDetails(ownerA, value.id, {
+      payee: "New payee",
+      note: "Fixed typo",
+    });
     const updated = await finance.getTransaction(ownerA, value.id);
-    expect(updated).toMatchObject({ payee: "New payee", note: "Fixed typo", journalEntryId: value.journalEntryId });
+    expect(updated).toMatchObject({
+      payee: "New payee",
+      note: "Fixed typo",
+      journalEntryId: value.journalEntryId,
+    });
     expect(updated.amount.equals(value.amount)).toBe(true);
     expect(await lines(value.journalEntryId)).toEqual(entryLines);
   });
@@ -346,11 +569,34 @@ describe("transactions", () => {
   it("filters history by date, type, account, category and text", async () => {
     const all = await finance.listTransactions(ownerA);
     expect(all.length).toBeGreaterThan(3);
-    expect((await finance.listTransactions(ownerA, { kind: "transfer" })).every((t) => t.kind === "transfer")).toBe(true);
-    expect((await finance.listTransactions(ownerA, { accountId: cash.id })).every((t) => t.sourceAccountId === cash.id || t.destinationAccountId === cash.id)).toBe(true);
-    expect((await finance.listTransactions(ownerA, { search: "acme" })).map((t) => t.payee)).toContain("Acme Ltd");
-    expect(await finance.listTransactions(ownerA, { from: parseLedgerDate("2030-01-01") })).toEqual([]);
-    expect((await finance.listTransactions(ownerA, { to: parseLedgerDate("2026-10-01") })).every((t) => t.occurredOn <= "2026-10-01")).toBe(true);
+    expect(
+      (await finance.listTransactions(ownerA, { kind: "transfer" })).every(
+        (t) => t.kind === "transfer",
+      ),
+    ).toBe(true);
+    expect(
+      (await finance.listTransactions(ownerA, { accountId: cash.id })).every(
+        (t) =>
+          t.sourceAccountId === cash.id || t.destinationAccountId === cash.id,
+      ),
+    ).toBe(true);
+    expect(
+      (await finance.listTransactions(ownerA, { search: "acme" })).map(
+        (t) => t.payee,
+      ),
+    ).toContain("Acme Ltd");
+    expect(
+      await finance.listTransactions(ownerA, {
+        from: parseLedgerDate("2030-01-01"),
+      }),
+    ).toEqual([]);
+    expect(
+      (
+        await finance.listTransactions(ownerA, {
+          to: parseLedgerDate("2026-10-01"),
+        })
+      ).every((t) => t.occurredOn <= "2026-10-01"),
+    ).toBe(true);
   });
 });
 
@@ -358,30 +604,56 @@ describe("opening balances", () => {
   it("cannot be set twice or overwritten; corrections reverse and replace it", async () => {
     const created = await account(ownerA, "Opening test");
     const k = key();
-    const { value: first } = await finance.setOpeningBalance(ownerA, created.id, { amount: "1000", date: "2026-09-30", idempotencyKey: k });
-    expect(await finance.setOpeningBalance(ownerA, created.id, { amount: "1000", date: "2026-09-30", idempotencyKey: k })).toMatchObject({
+    const { value: first } = await finance.setOpeningBalance(
+      ownerA,
+      created.id,
+      { amount: "1000", date: "2026-09-30", idempotencyKey: k },
+    );
+    expect(
+      await finance.setOpeningBalance(ownerA, created.id, {
+        amount: "1000",
+        date: "2026-09-30",
+        idempotencyKey: k,
+      }),
+    ).toMatchObject({
       replayed: true,
     });
     await expect(
-      finance.setOpeningBalance(ownerA, created.id, { amount: "2000", date: "2026-09-30", idempotencyKey: key() }),
+      finance.setOpeningBalance(ownerA, created.id, {
+        amount: "2000",
+        date: "2026-09-30",
+        idempotencyKey: key(),
+      }),
     ).rejects.toMatchObject({ reason: "opening-balance-exists" });
 
     const ck = key();
-    const { value: corrected } = await finance.correctOpeningBalance(ownerA, created.id, {
-      amount: "1500",
-      date: "2026-09-30",
-      idempotencyKey: ck,
+    const { value: corrected } = await finance.correctOpeningBalance(
+      ownerA,
+      created.id,
+      {
+        amount: "1500",
+        date: "2026-09-30",
+        idempotencyKey: ck,
+      },
+    );
+    expect(corrected).toMatchObject({
+      kind: "opening_balance",
+      replacesTransactionId: first.id,
     });
-    expect(corrected).toMatchObject({ kind: "opening_balance", replacesTransactionId: first.id });
     expect(await balanceOf(ownerA, created.id)).toBe("1500.00");
     const original = await finance.getTransaction(ownerA, first.id);
     expect(original.voidedAt).toBeInstanceOf(Date);
     expect(original.replacedByTransactionId).toBe(corrected.id);
-    expect(await finance.correctOpeningBalance(ownerA, created.id, { amount: "1500", date: "2026-09-30", idempotencyKey: ck })).toMatchObject({
+    expect(
+      await finance.correctOpeningBalance(ownerA, created.id, {
+        amount: "1500",
+        date: "2026-09-30",
+        idempotencyKey: ck,
+      }),
+    ).toMatchObject({
       replayed: true,
       value: { id: corrected.id },
     });
-    // The original journal entry is unchanged, offset by a linked reversal.
     expect(await lines(first.journalEntryId)).toEqual([
       ["asset", "debit", "100000", "INR"],
       ["equity", "credit", "100000", "INR"],
@@ -391,7 +663,11 @@ describe("opening balances", () => {
   it("refuses to correct a missing opening balance", async () => {
     const created = await account(ownerA, "No opening");
     await expect(
-      finance.correctOpeningBalance(ownerA, created.id, { amount: "1", date: today, idempotencyKey: key() }),
+      finance.correctOpeningBalance(ownerA, created.id, {
+        amount: "1",
+        date: today,
+        idempotencyKey: key(),
+      }),
     ).rejects.toMatchObject({ reason: "no-opening-balance" });
   });
 });
@@ -404,9 +680,14 @@ describe("atomicity", () => {
       ledger: stores.ledger,
       finance: new Proxy(stores.finance, {
         get(target, prop, receiver) {
-          if (prop === "insertTransaction") return async () => { throw new Error("simulated crash after posting"); };
+          if (prop === "insertTransaction")
+            return async () => {
+              throw new Error("simulated crash after posting");
+            };
           const value = Reflect.get(target, prop, receiver) as unknown;
-          return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+          return typeof value === "function"
+            ? (value as (...args: unknown[]) => unknown).bind(target)
+            : value;
         },
       }) as FinanceStore,
     }));
@@ -429,21 +710,30 @@ describe("atomicity", () => {
     const failing = financeFor(prisma, (stores) => ({
       ledger: new Proxy(stores.ledger, {
         get(target, prop, receiver) {
-          if (prop === "markPosted") return async () => { throw new Error("simulated ledger failure"); };
+          if (prop === "markPosted")
+            return async () => {
+              throw new Error("simulated ledger failure");
+            };
           const value = Reflect.get(target, prop, receiver) as unknown;
-          return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+          return typeof value === "function"
+            ? (value as (...args: unknown[]) => unknown).bind(target)
+            : value;
         },
       }),
       finance: stores.finance,
     }));
     await expect(
-      failing.createAccount(ownerA, { name: "Never", type: "bank", openingBalance: { amount: "1", date: today }, idempotencyKey: key() }),
+      failing.createAccount(ownerA, {
+        name: "Never",
+        type: "bank",
+        openingBalance: { amount: "1", date: today },
+        idempotencyKey: key(),
+      }),
     ).rejects.toThrow("simulated ledger failure");
     expect(await counts(seededA.ownerId)).toEqual(before);
   });
 
   it("lets the database veto a transaction whose entry does not match it", async () => {
-    // A buggy store records the transaction with a different amount than posted.
     const created = await account(ownerA, "Veto bank");
     const salary = await category(ownerA, "Salary", "income");
     const buggy = financeFor(prisma, (stores) => ({
@@ -452,10 +742,15 @@ describe("atomicity", () => {
         get(target, prop, receiver) {
           if (prop === "insertTransaction") {
             return (row: Parameters<FinanceStore["insertTransaction"]>[0]) =>
-              target.insertTransaction({ ...row, amount: row.amount.add(row.amount) });
+              target.insertTransaction({
+                ...row,
+                amount: row.amount.add(row.amount),
+              });
           }
           const value = Reflect.get(target, prop, receiver) as unknown;
-          return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+          return typeof value === "function"
+            ? (value as (...args: unknown[]) => unknown).bind(target)
+            : value;
         },
       }) as FinanceStore,
     }));
@@ -469,9 +764,13 @@ describe("atomicity", () => {
         categoryId: salary.id,
         idempotencyKey: key(),
       }),
-    ).rejects.toMatchObject({ reason: "the journal entry does not match the transaction" });
+    ).rejects.toMatchObject({
+      reason: "the journal entry does not match the transaction",
+    });
     expect(await counts(seededA.ownerId)).toEqual(before);
-    await expect(Promise.reject(new LedgerIntegrityError("x"))).rejects.toBeInstanceOf(LedgerIntegrityError);
+    await expect(
+      Promise.reject(new LedgerIntegrityError("x")),
+    ).rejects.toBeInstanceOf(LedgerIntegrityError);
   });
 });
 
@@ -484,9 +783,22 @@ describe("concurrency", () => {
   it("records once when the same request races itself", async () => {
     const created = await account(ownerA, "Race bank");
     const salary = await category(ownerA, "Salary", "income");
-    const input = { kind: "income", amount: "7", date: today, destinationAccountId: created.id, categoryId: salary.id, idempotencyKey: key() };
-    const results = await Promise.allSettled(Array.from({ length: PARALLEL }, () => concurrent.recordTransaction(ownerA, input)));
-    const values = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    const input = {
+      kind: "income",
+      amount: "7",
+      date: today,
+      destinationAccountId: created.id,
+      categoryId: salary.id,
+      idempotencyKey: key(),
+    };
+    const results = await Promise.allSettled(
+      Array.from({ length: PARALLEL }, () =>
+        concurrent.recordTransaction(ownerA, input),
+      ),
+    );
+    const values = results.flatMap((r) =>
+      r.status === "fulfilled" ? [r.value] : [],
+    );
     expect(values).toHaveLength(PARALLEL);
     expect(new Set(values.map((v) => v.value.id)).size).toBe(1);
     expect(values.filter((v) => !v.replayed)).toHaveLength(1);
@@ -494,19 +806,37 @@ describe("concurrency", () => {
   });
 
   it("creates one account when account creation races itself", async () => {
-    const input = { name: `Race ${randomUUID().slice(0, 6)}`, type: "bank", openingBalance: { amount: "3", date: today }, idempotencyKey: key() };
-    const results = await Promise.allSettled(Array.from({ length: PARALLEL }, () => concurrent.createAccount(ownerA, input)));
-    const values = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    const input = {
+      name: `Race ${randomUUID().slice(0, 6)}`,
+      type: "bank",
+      openingBalance: { amount: "3", date: today },
+      idempotencyKey: key(),
+    };
+    const results = await Promise.allSettled(
+      Array.from({ length: PARALLEL }, () =>
+        concurrent.createAccount(ownerA, input),
+      ),
+    );
+    const values = results.flatMap((r) =>
+      r.status === "fulfilled" ? [r.value] : [],
+    );
     expect(values).toHaveLength(PARALLEL);
     expect(new Set(values.map((v) => v.value.id)).size).toBe(1);
     expect(await balanceOf(ownerA, values[0]!.value.id)).toBe("3.00");
   });
 
   it("allows only one opening balance when two different requests race", async () => {
-    const created = await account(ownerA, `Opening race ${randomUUID().slice(0, 6)}`);
+    const created = await account(
+      ownerA,
+      `Opening race ${randomUUID().slice(0, 6)}`,
+    );
     const results = await Promise.allSettled(
       Array.from({ length: PARALLEL }, (_, i) =>
-        concurrent.setOpeningBalance(ownerA, created.id, { amount: String(i + 1), date: today, idempotencyKey: key() }),
+        concurrent.setOpeningBalance(ownerA, created.id, {
+          amount: String(i + 1),
+          date: today,
+          idempotencyKey: key(),
+        }),
       ),
     );
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
@@ -518,10 +848,20 @@ describe("concurrency", () => {
   });
 
   it("does not let an archive race past a transaction (or vice versa)", async () => {
-    const created = await account(ownerA, `Archive race ${randomUUID().slice(0, 6)}`);
+    const created = await account(
+      ownerA,
+      `Archive race ${randomUUID().slice(0, 6)}`,
+    );
     const salary = await category(ownerA, "Salary", "income");
     const results = await Promise.allSettled([
-      concurrent.recordTransaction(ownerA, { kind: "income", amount: "1", date: today, destinationAccountId: created.id, categoryId: salary.id, idempotencyKey: key() }),
+      concurrent.recordTransaction(ownerA, {
+        kind: "income",
+        amount: "1",
+        date: today,
+        destinationAccountId: created.id,
+        categoryId: salary.id,
+        idempotencyKey: key(),
+      }),
       concurrent.archiveAccount(ownerA, created.id),
     ]);
     expect(results[1].status).toBe("fulfilled");
@@ -530,37 +870,87 @@ describe("concurrency", () => {
         WHERE fa.id = $1`,
       [created.id],
     );
-    // Either the income committed before the archive, or it was refused.
-    for (const row of rows) expect(row.created_at.getTime()).toBeLessThanOrEqual(row.archived_at.getTime());
+    for (const row of rows)
+      expect(row.created_at.getTime()).toBeLessThanOrEqual(
+        row.archived_at.getTime(),
+      );
   });
 });
 
 describe("owner isolation", () => {
   it("never lets owner B see or use owner A's accounts, categories or transactions", async () => {
-    const aAccount = await account(ownerA, "A private", { openingBalance: { amount: "99", date: today } });
+    const aAccount = await account(ownerA, "A private", {
+      openingBalance: { amount: "99", date: today },
+    });
     const aCategory = await category(ownerA, "Salary", "income");
     const bAccount = await account(ownerB, "B bank");
-    const aTransactions = await finance.listTransactions(ownerA, { accountId: aAccount.id });
+    const aTransactions = await finance.listTransactions(ownerA, {
+      accountId: aAccount.id,
+    });
 
-    expect((await finance.listAccounts(ownerB)).map((a) => a.account.id)).not.toContain(aAccount.id);
-    await expect(finance.getAccount(ownerB, aAccount.id)).rejects.toThrow(FinanceNotFoundError);
-    await expect(finance.updateAccount(ownerB, aAccount.id, { name: "Hijack", type: "bank" })).rejects.toThrow(FinanceNotFoundError);
-    await expect(finance.archiveAccount(ownerB, aAccount.id)).rejects.toThrow(FinanceNotFoundError);
-    await expect(finance.deleteAccount(ownerB, aAccount.id)).rejects.toThrow(FinanceNotFoundError);
-    await expect(finance.getTransaction(ownerB, aTransactions[0]!.id)).rejects.toThrow(FinanceNotFoundError);
-    await expect(finance.voidTransaction(ownerB, aTransactions[0]!.id, { date: today, idempotencyKey: key() })).rejects.toThrow(
+    expect(
+      (await finance.listAccounts(ownerB)).map((a) => a.account.id),
+    ).not.toContain(aAccount.id);
+    await expect(finance.getAccount(ownerB, aAccount.id)).rejects.toThrow(
       FinanceNotFoundError,
     );
     await expect(
-      finance.setOpeningBalance(ownerB, aAccount.id, { amount: "1", date: today, idempotencyKey: key() }),
+      finance.updateAccount(ownerB, aAccount.id, {
+        name: "Hijack",
+        type: "bank",
+      }),
     ).rejects.toThrow(FinanceNotFoundError);
-    // Referencing A's account or category from B's own transaction:
+    await expect(finance.archiveAccount(ownerB, aAccount.id)).rejects.toThrow(
+      FinanceNotFoundError,
+    );
+    await expect(finance.deleteAccount(ownerB, aAccount.id)).rejects.toThrow(
+      FinanceNotFoundError,
+    );
     await expect(
-      finance.recordTransaction(ownerB, { kind: "transfer", amount: "1", date: today, sourceAccountId: bAccount.id, destinationAccountId: aAccount.id, idempotencyKey: key() }),
-    ).rejects.toMatchObject({ issues: [expect.objectContaining({ field: "destinationAccountId", message: "That account does not exist" })] });
+      finance.getTransaction(ownerB, aTransactions[0]!.id),
+    ).rejects.toThrow(FinanceNotFoundError);
     await expect(
-      finance.recordTransaction(ownerB, { kind: "income", amount: "1", date: today, destinationAccountId: bAccount.id, categoryId: aCategory.id, idempotencyKey: key() }),
-    ).rejects.toMatchObject({ issues: [expect.objectContaining({ field: "categoryId" })] });
+      finance.voidTransaction(ownerB, aTransactions[0]!.id, {
+        date: today,
+        idempotencyKey: key(),
+      }),
+    ).rejects.toThrow(FinanceNotFoundError);
+    await expect(
+      finance.setOpeningBalance(ownerB, aAccount.id, {
+        amount: "1",
+        date: today,
+        idempotencyKey: key(),
+      }),
+    ).rejects.toThrow(FinanceNotFoundError);
+    await expect(
+      finance.recordTransaction(ownerB, {
+        kind: "transfer",
+        amount: "1",
+        date: today,
+        sourceAccountId: bAccount.id,
+        destinationAccountId: aAccount.id,
+        idempotencyKey: key(),
+      }),
+    ).rejects.toMatchObject({
+      issues: [
+        expect.objectContaining({
+          field: "destinationAccountId",
+          message: "That account does not exist",
+        }),
+      ],
+    });
+    await expect(
+      finance.recordTransaction(ownerB, {
+        kind: "income",
+        amount: "1",
+        date: today,
+        destinationAccountId: bAccount.id,
+        categoryId: aCategory.id,
+        idempotencyKey: key(),
+      }),
+    ).rejects.toMatchObject({
+      issues: [expect.objectContaining({ field: "categoryId" })],
+    });
     expect(await balanceOf(ownerA, aAccount.id)).toBe("99.00");
   });
 });
@@ -572,7 +962,12 @@ describe("default categories (explicit setup only)", () => {
     return { seeded, owner: await authorize(prisma, seeded.subject) };
   }
   const categoryCount = async (ownerId: string) =>
-    (await admin.query("SELECT count(*)::int AS n FROM finora.categories WHERE owner_id = $1", [ownerId])).rows[0].n as number;
+    (
+      await admin.query(
+        "SELECT count(*)::int AS n FROM finora.categories WHERE owner_id = $1",
+        [ownerId],
+      )
+    ).rows[0].n as number;
 
   it("is never triggered by reads", async () => {
     const { seeded, owner } = await freshOwner();
@@ -584,16 +979,24 @@ describe("default categories (explicit setup only)", () => {
 
   it("creates the defaults once and is idempotent", async () => {
     const { seeded, owner } = await freshOwner();
-    expect(await finance.initializeDefaultCategories(owner)).toEqual({ created: DEFAULT_CATEGORIES.length });
-    expect(await finance.initializeDefaultCategories(owner)).toEqual({ created: 0 });
+    expect(await finance.initializeDefaultCategories(owner)).toEqual({
+      created: DEFAULT_CATEGORIES.length,
+    });
+    expect(await finance.initializeDefaultCategories(owner)).toEqual({
+      created: 0,
+    });
     expect(await categoryCount(seeded.ownerId)).toBe(DEFAULT_CATEGORIES.length);
   });
 
   it("never touches an owner who already has categories (custom ones are preserved)", async () => {
     const { seeded, owner } = await freshOwner();
     await finance.createCategory(owner, { name: "Freelance", kind: "income" });
-    expect(await finance.initializeDefaultCategories(owner)).toEqual({ created: 0 });
-    expect((await finance.listCategories(owner)).map((c) => c.name)).toEqual(["Freelance"]);
+    expect(await finance.initializeDefaultCategories(owner)).toEqual({
+      created: 0,
+    });
+    expect((await finance.listCategories(owner)).map((c) => c.name)).toEqual([
+      "Freelance",
+    ]);
     expect(await categoryCount(seeded.ownerId)).toBe(1);
   });
 
@@ -601,17 +1004,24 @@ describe("default categories (explicit setup only)", () => {
     const { seeded, owner } = await freshOwner();
     const pool = createPrismaClient(inject("local").appDatabaseUrl, 6);
     try {
-      const results = await Promise.all(Array.from({ length: 6 }, () => financeFor(pool).initializeDefaultCategories(owner)));
-      expect(results.reduce((sum, r) => sum + r.created, 0)).toBe(DEFAULT_CATEGORIES.length);
+      const results = await Promise.all(
+        Array.from({ length: 6 }, () =>
+          financeFor(pool).initializeDefaultCategories(owner),
+        ),
+      );
+      expect(results.reduce((sum, r) => sum + r.created, 0)).toBe(
+        DEFAULT_CATEGORIES.length,
+      );
     } finally {
       await pool.$disconnect();
     }
     expect(await categoryCount(seeded.ownerId)).toBe(DEFAULT_CATEGORIES.length);
-    expect(await categoryCount(seededB.ownerId)).toBe((await finance.listCategories(ownerB)).length);
+    expect(await categoryCount(seededB.ownerId)).toBe(
+      (await finance.listCategories(ownerB)).length,
+    );
   });
 });
 
-/** The finance service with the store's friendly duplicate-name check switched off. */
 function withoutNameCheck(client = prisma) {
   return financeFor(client, (stores) => ({
     ledger: stores.ledger,
@@ -619,39 +1029,54 @@ function withoutNameCheck(client = prisma) {
       get(target, prop, receiver) {
         if (prop === "accountNameTaken") return async () => false;
         const value = Reflect.get(target, prop, receiver) as unknown;
-        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+        return typeof value === "function"
+          ? (value as (...args: unknown[]) => unknown).bind(target)
+          : value;
       },
     }) as FinanceStore,
   }));
 }
 
-/** Code points in hex, so NFC and NFD forms are told apart in assertions. */
-const hexOf = (s: string) => [...s].map((c) => c.codePointAt(0)!.toString(16).padStart(4, "0")).join(" ");
+const hexOf = (s: string) =>
+  [...s].map((c) => c.codePointAt(0)!.toString(16).padStart(4, "0")).join(" ");
 
-/** Stored name and key of an account, as code points. */
 async function stored(id: string) {
-  const { rows } = await admin.query("SELECT name, name_key FROM finora.financial_accounts WHERE id = $1", [id]);
+  const { rows } = await admin.query(
+    "SELECT name, name_key FROM finora.financial_accounts WHERE id = $1",
+    [id],
+  );
   return { name: hexOf(rows[0].name), key: hexOf(rows[0].name_key) };
 }
 
 describe("account names are unique per owner by comparison key (ADR 0007)", () => {
   it("refuses a name that differs only by case, on create and rename", async () => {
     await account(ownerA, "Joint Savings");
-    await expect(account(ownerA, "JOINT savings")).rejects.toMatchObject({ reason: "account-name-taken" });
-    const other = await account(ownerA, "Other Savings");
-    await expect(finance.updateAccount(ownerA, other.id, { name: "joint SAVINGS", type: "bank" })).rejects.toMatchObject({
+    await expect(account(ownerA, "JOINT savings")).rejects.toMatchObject({
       reason: "account-name-taken",
     });
-    // Renaming an account to a new case of its own name is fine.
-    await finance.updateAccount(ownerA, other.id, { name: "OTHER savings", type: "bank" });
+    const other = await account(ownerA, "Other Savings");
+    await expect(
+      finance.updateAccount(ownerA, other.id, {
+        name: "joint SAVINGS",
+        type: "bank",
+      }),
+    ).rejects.toMatchObject({
+      reason: "account-name-taken",
+    });
+    await finance.updateAccount(ownerA, other.id, {
+      name: "OTHER savings",
+      type: "bank",
+    });
   });
 
   it("filters the name check by the store's owner explicitly, not only through RLS", async () => {
     await account(ownerA, "Owner Filter Probe");
-    // RLS context is owner A (whose account it is); only the store's owner differs.
     const taken = (storeOwner: AuthorizedOwner) =>
       runInOwnerScope(prisma, ownerA, (tx) =>
-        new PrismaFinanceStore(tx, storeOwner.ownerId as OwnerId).accountNameTaken(canonicalAccountName("owner filter PROBE")),
+        new PrismaFinanceStore(
+          tx,
+          storeOwner.ownerId as OwnerId,
+        ).accountNameTaken(canonicalAccountName("owner filter PROBE")),
       );
     expect(await taken(ownerA)).toBe(true);
     expect(await taken(ownerB)).toBe(false);
@@ -659,26 +1084,46 @@ describe("account names are unique per owner by comparison key (ADR 0007)", () =
 
   it("lets different owners use the same name", async () => {
     await account(ownerA, "Shared Name");
-    await expect(account(ownerB, "shared NAME")).resolves.toMatchObject({ name: "shared NAME" });
+    await expect(account(ownerB, "shared NAME")).resolves.toMatchObject({
+      name: "shared NAME",
+    });
   });
 
   it("compares names exactly, not as patterns", async () => {
     await account(ownerA, "A_c");
-    await expect(account(ownerA, "Abc")).resolves.toMatchObject({ name: "Abc" });
+    await expect(account(ownerA, "Abc")).resolves.toMatchObject({
+      name: "Abc",
+    });
     await account(ownerA, "100%");
-    await expect(account(ownerA, "100x")).resolves.toMatchObject({ name: "100x" });
+    await expect(account(ownerA, "100x")).resolves.toMatchObject({
+      name: "100x",
+    });
   });
 
   it("creates exactly one account when case variants race", async () => {
     const pool = createPrismaClient(inject("local").appDatabaseUrl, 6);
     try {
-      const names = ["Race Name", "RACE NAME", "race name", "Race name", "rACE nAME", "RaCe NaMe"];
+      const names = [
+        "Race Name",
+        "RACE NAME",
+        "race name",
+        "Race name",
+        "rACE nAME",
+        "RaCe NaMe",
+      ];
       const results = await Promise.allSettled(
-        names.map((name) => financeFor(pool).createAccount(ownerA, { name, type: "bank", idempotencyKey: key() })),
+        names.map((name) =>
+          financeFor(pool).createAccount(ownerA, {
+            name,
+            type: "bank",
+            idempotencyKey: key(),
+          }),
+        ),
       );
       expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
       for (const r of results) {
-        if (r.status === "rejected") expect(r.reason).toMatchObject({ reason: "account-name-taken" });
+        if (r.status === "rejected")
+          expect(r.reason).toMatchObject({ reason: "account-name-taken" });
       }
     } finally {
       await pool.$disconnect();
@@ -694,70 +1139,134 @@ describe("account names are unique per owner by comparison key (ADR 0007)", () =
     await account(ownerA, "Backstop");
     const before = await counts(seededA.ownerId);
     const error = await withoutNameCheck()
-      .createAccount(ownerA, { name: "BACKSTOP", type: "bank", idempotencyKey: key() })
-      .then(() => null, (e: unknown) => e as Error);
+      .createAccount(ownerA, {
+        name: "BACKSTOP",
+        type: "bank",
+        idempotencyKey: key(),
+      })
+      .then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
     expect(error).toBeInstanceOf(FinanceConflictError);
     expect(error?.message).toBe("You already have an account with that name");
-    expect(error?.message).not.toMatch(/financial_accounts|unique|constraint|SQL/i);
-    expect(await counts(seededA.ownerId)).toEqual(before); // the ledger account was rolled back too
+    expect(error?.message).not.toMatch(
+      /financial_accounts|unique|constraint|SQL/i,
+    );
+    expect(await counts(seededA.ownerId)).toEqual(before);
   });
 
   it("reports the index as a friendly conflict on rename too, changing nothing", async () => {
     await account(ownerA, "Rename Backstop");
     const other = await account(ownerA, "Rename Backstop Other");
     const error = await withoutNameCheck()
-      .updateAccount(ownerA, other.id, { name: "rename BACKSTOP", type: "cash" })
-      .then(() => null, (e: unknown) => e as Error);
+      .updateAccount(ownerA, other.id, {
+        name: "rename BACKSTOP",
+        type: "cash",
+      })
+      .then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
     expect(error).toBeInstanceOf(FinanceConflictError);
     expect(error?.message).toBe("You already have an account with that name");
-    expect(error?.message).not.toMatch(/financial_accounts|name_key|unique|constraint|23505|SQL/i);
-    expect(await finance.getAccount(ownerA, other.id)).toMatchObject({ account: { name: "Rename Backstop Other", type: "bank" } });
+    expect(error?.message).not.toMatch(
+      /financial_accounts|name_key|unique|constraint|23505|SQL/i,
+    );
+    expect(await finance.getAccount(ownerA, other.id)).toMatchObject({
+      account: { name: "Rename Backstop Other", type: "bank" },
+    });
   });
 
   it("stores the NFC name and its key, whatever form was typed", async () => {
     const created = await account(ownerA, "  Cafe\u0301 Fund ");
     expect(created.name).toBe("Caf\u00e9 Fund");
-    expect(await stored(created.id)).toEqual({ name: hexOf("Caf\u00e9 Fund"), key: hexOf("caf\u00e9 fund") });
-    await finance.updateAccount(ownerA, created.id, { name: "CAFE\u0301 FUND", type: "bank" }); // its own name, another case
-    expect(await stored(created.id)).toEqual({ name: hexOf("CAF\u00c9 FUND"), key: hexOf("caf\u00e9 fund") });
+    expect(await stored(created.id)).toEqual({
+      name: hexOf("Caf\u00e9 Fund"),
+      key: hexOf("caf\u00e9 fund"),
+    });
+    await finance.updateAccount(ownerA, created.id, {
+      name: "CAFE\u0301 FUND",
+      type: "bank",
+    });
+    expect(await stored(created.id)).toEqual({
+      name: hexOf("CAF\u00c9 FUND"),
+      key: hexOf("caf\u00e9 fund"),
+    });
   });
 
   it.each([
     ["NFD and NFC", "Caf\u00e9 Pot", "Cafe\u0301 pot"],
     ["accented Latin case", "\u00c9cole Fees", "\u00e9COLE FEES"],
     ["Turkish dotted capital I", "\u0130stanbul Trip", "i\u0307stanbul trip"],
-    ["Greek final sigma", "\u039f\u0394\u039f\u03a3 Card", "\u03bf\u03b4\u03bf\u03c2 card"],
+    [
+      "Greek final sigma",
+      "\u039f\u0394\u039f\u03a3 Card",
+      "\u03bf\u03b4\u03bf\u03c2 card",
+    ],
     ["capital sharp s", "Stra\u00dfe Rent", "STRA\u1e9eE RENT"],
-  ])("refuses %s variants on create and on rename", async (_label, first, variant) => {
-    await account(ownerA, first);
-    await expect(account(ownerA, variant)).rejects.toMatchObject({ reason: "account-name-taken" });
-    const other = await account(ownerA, `${first} 2`);
-    await expect(finance.updateAccount(ownerA, other.id, { name: variant, type: "bank" })).rejects.toMatchObject({
-      reason: "account-name-taken",
-    });
-  });
+  ])(
+    "refuses %s variants on create and on rename",
+    async (_label, first, variant) => {
+      await account(ownerA, first);
+      await expect(account(ownerA, variant)).rejects.toMatchObject({
+        reason: "account-name-taken",
+      });
+      const other = await account(ownerA, `${first} 2`);
+      await expect(
+        finance.updateAccount(ownerA, other.id, {
+          name: variant,
+          type: "bank",
+        }),
+      ).rejects.toMatchObject({
+        reason: "account-name-taken",
+      });
+    },
+  );
 
   it.each([
     ["sharp s and ss", "Gro\u00dfe Bank", "GROSSE BANK"],
     ["dotted and dotless I", "\u0130zmir Card", "Izmir Card"],
     ["dotless i and i", "\u0131zmir Wallet", "izmir Wallet"],
-    ["final and medial sigma at the end", "\u03bf\u03b4\u03bf\u03c2 Pot", "\u03bf\u03b4\u03bf\u03c3 Pot"],
+    [
+      "final and medial sigma at the end",
+      "\u03bf\u03b4\u03bf\u03c2 Pot",
+      "\u03bf\u03b4\u03bf\u03c3 Pot",
+    ],
     ["compatibility forms", "\ufb01ve Pot", "five Pot"],
   ])("keeps %s apart, as the policy says", async (_label, first, second) => {
     await account(ownerA, first);
-    await expect(account(ownerA, second)).resolves.toMatchObject({ name: second });
+    await expect(account(ownerA, second)).resolves.toMatchObject({
+      name: second,
+    });
   });
 
   it("renames exactly one account when renames to equivalent names race", async () => {
-    const ids = await Promise.all(["Rename Race 1", "Rename Race 2", "Rename Race 3", "Rename Race 4"].map((n) => account(ownerA, n)));
-    const targets = ["Cr\u00e8me Pot", "Cre\u0300me pot", "CR\u00c8ME POT", "cre\u0300ME Pot"];
+    const ids = await Promise.all(
+      ["Rename Race 1", "Rename Race 2", "Rename Race 3", "Rename Race 4"].map(
+        (n) => account(ownerA, n),
+      ),
+    );
+    const targets = [
+      "Cr\u00e8me Pot",
+      "Cre\u0300me pot",
+      "CR\u00c8ME POT",
+      "cre\u0300ME Pot",
+    ];
     const pool = createPrismaClient(inject("local").appDatabaseUrl, 4);
     try {
       const results = await Promise.allSettled(
-        ids.map((a, i) => financeFor(pool).updateAccount(ownerA, a.id, { name: targets[i]!, type: "bank" })),
+        ids.map((a, i) =>
+          financeFor(pool).updateAccount(ownerA, a.id, {
+            name: targets[i]!,
+            type: "bank",
+          }),
+        ),
       );
       expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
-      for (const r of results) if (r.status === "rejected") expect(r.reason).toMatchObject({ reason: "account-name-taken" });
+      for (const r of results)
+        if (r.status === "rejected")
+          expect(r.reason).toMatchObject({ reason: "account-name-taken" });
     } finally {
       await pool.$disconnect();
     }
@@ -769,17 +1278,31 @@ describe("account names are unique per owner by comparison key (ADR 0007)", () =
   });
 
   it("lets exactly one of a create and renames to the same key win", async () => {
-    const renamed = await Promise.all(["Mixed Race 1", "Mixed Race 2"].map((n) => account(ownerA, n)));
+    const renamed = await Promise.all(
+      ["Mixed Race 1", "Mixed Race 2"].map((n) => account(ownerA, n)),
+    );
     const pool = createPrismaClient(inject("local").appDatabaseUrl, 3);
     try {
       const service = financeFor(pool);
       const results = await Promise.allSettled([
-        service.createAccount(ownerA, { name: "\u00d6l Fund", type: "bank", idempotencyKey: key() }),
-        service.updateAccount(ownerA, renamed[0]!.id, { name: "O\u0308L FUND", type: "bank" }),
-        service.updateAccount(ownerA, renamed[1]!.id, { name: "\u00f6l fund", type: "bank" }),
+        service.createAccount(ownerA, {
+          name: "\u00d6l Fund",
+          type: "bank",
+          idempotencyKey: key(),
+        }),
+        service.updateAccount(ownerA, renamed[0]!.id, {
+          name: "O\u0308L FUND",
+          type: "bank",
+        }),
+        service.updateAccount(ownerA, renamed[1]!.id, {
+          name: "\u00f6l fund",
+          type: "bank",
+        }),
       ]);
       expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
-      for (const r of results) if (r.status === "rejected") expect(r.reason).toMatchObject({ reason: "account-name-taken" });
+      for (const r of results)
+        if (r.status === "rejected")
+          expect(r.reason).toMatchObject({ reason: "account-name-taken" });
     } finally {
       await pool.$disconnect();
     }
@@ -793,12 +1316,25 @@ describe("account names are unique per owner by comparison key (ADR 0007)", () =
   it("leaves the database index as the authority when racing writers skip the app check", async () => {
     const pool = createPrismaClient(inject("local").appDatabaseUrl, 4);
     try {
-      const names = ["Na\u00efve Pot", "Nai\u0308ve pot", "NA\u00cfVE POT", "nai\u0308VE Pot"];
+      const names = [
+        "Na\u00efve Pot",
+        "Nai\u0308ve pot",
+        "NA\u00cfVE POT",
+        "nai\u0308VE Pot",
+      ];
       const results = await Promise.allSettled(
-        names.map((name) => withoutNameCheck(pool).createAccount(ownerA, { name, type: "bank", idempotencyKey: key() })),
+        names.map((name) =>
+          withoutNameCheck(pool).createAccount(ownerA, {
+            name,
+            type: "bank",
+            idempotencyKey: key(),
+          }),
+        ),
       );
       expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
-      for (const r of results) if (r.status === "rejected") expect(r.reason).toMatchObject({ reason: "account-name-taken" });
+      for (const r of results)
+        if (r.status === "rejected")
+          expect(r.reason).toMatchObject({ reason: "account-name-taken" });
     } finally {
       await pool.$disconnect();
     }
@@ -806,15 +1342,20 @@ describe("account names are unique per owner by comparison key (ADR 0007)", () =
 });
 
 describe("credit cards: liability-backed accounts (ADR 0008)", () => {
-  const card = (owner: AuthorizedOwner, name: string, extra: Record<string, unknown> = {}) =>
-    account(owner, name, { type: "credit_card", ...extra });
+  const card = (
+    owner: AuthorizedOwner,
+    name: string,
+    extra: Record<string, unknown> = {},
+  ) => account(owner, name, { type: "credit_card", ...extra });
 
   async function ledgerKind(ledgerAccountId: string) {
-    const { rows } = await admin.query("SELECT kind::text AS kind, currency_code FROM finora.ledger_accounts WHERE id = $1", [ledgerAccountId]);
+    const { rows } = await admin.query(
+      "SELECT kind::text AS kind, currency_code FROM finora.ledger_accounts WHERE id = $1",
+      [ledgerAccountId],
+    );
     return rows[0] as { kind: string; currency_code: string };
   }
 
-  /** Posted balance of the owner's opening-balance equity account in `currency`, signed to its normal (credit) side. */
   async function equityBalance(ownerId: string, currency = "INR") {
     const { rows } = await admin.query(
       `SELECT coalesce(sum(CASE l.side WHEN 'credit' THEN l.amount_minor ELSE -l.amount_minor END), 0)::text AS n
@@ -831,46 +1372,85 @@ describe("credit cards: liability-backed accounts (ADR 0008)", () => {
     const bank = await account(ownerA, "Class bank");
     const cash = await account(ownerA, "Class cash", { type: "cash" });
     const hdfc = await card(ownerA, "Class card", { currency: "USD" });
-    expect(await ledgerKind(bank.ledgerAccountId)).toEqual({ kind: "asset", currency_code: "INR" });
-    expect(await ledgerKind(cash.ledgerAccountId)).toEqual({ kind: "asset", currency_code: "INR" });
-    expect(hdfc).toMatchObject({ type: "credit_card", currency: { code: "USD" } });
-    expect(await ledgerKind(hdfc.ledgerAccountId)).toEqual({ kind: "liability", currency_code: "USD" });
+    expect(await ledgerKind(bank.ledgerAccountId)).toEqual({
+      kind: "asset",
+      currency_code: "INR",
+    });
+    expect(await ledgerKind(cash.ledgerAccountId)).toEqual({
+      kind: "asset",
+      currency_code: "INR",
+    });
+    expect(hdfc).toMatchObject({
+      type: "credit_card",
+      currency: { code: "USD" },
+    });
+    expect(await ledgerKind(hdfc.ledgerAccountId)).toEqual({
+      kind: "liability",
+      currency_code: "USD",
+    });
     const detail = await finance.getAccount(ownerA, hdfc.id);
     expect(detail.balance.toDecimalString()).toBe("0.00");
-    expect(detail.lifecycle).toEqual({ canTransact: true, canArchive: true, canRestore: false, canDelete: true });
+    expect(detail.lifecycle).toEqual({
+      canTransact: true,
+      canArchive: true,
+      canRestore: false,
+      canDelete: true,
+    });
   });
 
   it("opens a card with the amount owed: Dr opening-balance equity, Cr card liability; balance owed is positive", async () => {
     const { seeded, owner } = await freshOwner();
-    const axis = await account(owner, "Axis Savings", { openingBalance: { amount: "50000", date: "2026-10-01" } });
-    const hdfc = await card(owner, "HDFC Card", { openingBalance: { amount: "12000", date: "2026-10-01" } });
+    const axis = await account(owner, "Axis Savings", {
+      openingBalance: { amount: "50000", date: "2026-10-01" },
+    });
+    const hdfc = await card(owner, "HDFC Card", {
+      openingBalance: { amount: "12000", date: "2026-10-01" },
+    });
 
-    const assetOpening = (await finance.getAccount(owner, axis.id)).openingBalance!;
+    const assetOpening = (await finance.getAccount(owner, axis.id))
+      .openingBalance!;
     expect(await lines(assetOpening.journalEntryId)).toEqual([
       ["asset", "debit", "5000000", "INR"],
       ["equity", "credit", "5000000", "INR"],
     ]);
     const detail = await finance.getAccount(owner, hdfc.id);
-    expect(detail.openingBalance).toMatchObject({ kind: "opening_balance", destinationAccountId: hdfc.id, sourceAccountId: null, categoryId: null });
+    expect(detail.openingBalance).toMatchObject({
+      kind: "opening_balance",
+      destinationAccountId: hdfc.id,
+      sourceAccountId: null,
+      categoryId: null,
+    });
     expect(await lines(detail.openingBalance!.journalEntryId)).toEqual([
       ["equity", "debit", "1200000", "INR"],
       ["liability", "credit", "1200000", "INR"],
     ]);
-    expect(detail.balance.toDecimalString()).toBe("12000.00"); // the liability's normal balance: owed
+    expect(detail.balance.toDecimalString()).toBe("12000.00");
     expect(await balanceOf(owner, axis.id)).toBe("50000.00");
-    expect(await equityBalance(seeded.ownerId)).toBe(String(5_000_000 - 1_200_000)); // ₹38,000.00, one equity account per currency
+    expect(await equityBalance(seeded.ownerId)).toBe(
+      String(5_000_000 - 1_200_000),
+    );
     expect(detail.hasHistory).toBe(true);
-    await expect(finance.deleteAccount(owner, hdfc.id)).rejects.toMatchObject({ reason: "account-has-history" });
+    await expect(finance.deleteAccount(owner, hdfc.id)).rejects.toMatchObject({
+      reason: "account-has-history",
+    });
   });
 
   it("corrects and voids a card's opening balance in the liability direction, never editing the original", async () => {
     const { owner } = await freshOwner();
     const hdfc = await card(owner, "Correct card");
-    const { value: first } = await finance.setOpeningBalance(owner, hdfc.id, { amount: "12000", date: "2026-10-01", idempotencyKey: key() });
+    const { value: first } = await finance.setOpeningBalance(owner, hdfc.id, {
+      amount: "12000",
+      date: "2026-10-01",
+      idempotencyKey: key(),
+    });
     expect(await balanceOf(owner, hdfc.id)).toBe("12000.00");
 
     const ck = key();
-    const { value: corrected } = await finance.correctOpeningBalance(owner, hdfc.id, { amount: "15000", date: "2026-10-01", idempotencyKey: ck });
+    const { value: corrected } = await finance.correctOpeningBalance(
+      owner,
+      hdfc.id,
+      { amount: "15000", date: "2026-10-01", idempotencyKey: ck },
+    );
     expect(await balanceOf(owner, hdfc.id)).toBe("15000.00");
     const original = await finance.getTransaction(owner, first.id);
     expect(original.replacedByTransactionId).toBe(corrected.id);
@@ -886,12 +1466,21 @@ describe("credit cards: liability-backed accounts (ADR 0008)", () => {
       ["equity", "debit", "1500000", "INR"],
       ["liability", "credit", "1500000", "INR"],
     ]);
-    expect(await finance.correctOpeningBalance(owner, hdfc.id, { amount: "15000", date: "2026-10-01", idempotencyKey: ck })).toMatchObject({
+    expect(
+      await finance.correctOpeningBalance(owner, hdfc.id, {
+        amount: "15000",
+        date: "2026-10-01",
+        idempotencyKey: ck,
+      }),
+    ).toMatchObject({
       replayed: true,
       value: { id: corrected.id },
     });
 
-    const voided = await finance.voidTransaction(owner, corrected.id, { date: today, idempotencyKey: key() });
+    const voided = await finance.voidTransaction(owner, corrected.id, {
+      date: today,
+      idempotencyKey: key(),
+    });
     expect(await lines(voided.value.reversalEntryId!)).toEqual([
       ["equity", "credit", "1500000", "INR"],
       ["liability", "debit", "1500000", "INR"],
@@ -903,65 +1492,165 @@ describe("credit cards: liability-backed accounts (ADR 0008)", () => {
     ["a negative amount (never read as a credit balance)", "-500"],
     ["zero", "0"],
     ["too many decimals", "1.005"],
-  ])("refuses %s as an opening amount owed, writing nothing", async (_label, amount) => {
-    const before = await counts(seededA.ownerId);
-    await expect(card(ownerA, `Bad card ${randomUUID().slice(0, 6)}`, { openingBalance: { amount, date: today } })).rejects.toMatchObject({
-      issues: [expect.objectContaining({ field: "openingAmount" })],
-    });
-    expect(await counts(seededA.ownerId)).toEqual(before);
-    const hdfc = await card(ownerA, `Later card ${randomUUID().slice(0, 6)}`);
-    await expect(finance.setOpeningBalance(ownerA, hdfc.id, { amount, date: today, idempotencyKey: key() })).rejects.toMatchObject({
-      issues: [expect.objectContaining({ field: "openingAmount" })],
-    });
-    expect(await balanceOf(ownerA, hdfc.id)).toBe("0.00");
-  });
+  ])(
+    "refuses %s as an opening amount owed, writing nothing",
+    async (_label, amount) => {
+      const before = await counts(seededA.ownerId);
+      await expect(
+        card(ownerA, `Bad card ${randomUUID().slice(0, 6)}`, {
+          openingBalance: { amount, date: today },
+        }),
+      ).rejects.toMatchObject({
+        issues: [expect.objectContaining({ field: "openingAmount" })],
+      });
+      expect(await counts(seededA.ownerId)).toEqual(before);
+      const hdfc = await card(ownerA, `Later card ${randomUUID().slice(0, 6)}`);
+      await expect(
+        finance.setOpeningBalance(ownerA, hdfc.id, {
+          amount,
+          date: today,
+          idempotencyKey: key(),
+        }),
+      ).rejects.toMatchObject({
+        issues: [expect.objectContaining({ field: "openingAmount" })],
+      });
+      expect(await balanceOf(ownerA, hdfc.id)).toBe("0.00");
+    },
+  );
 
   it("refuses type changes across classes, keeping bank <-> cash", async () => {
     const hdfc = await card(ownerA, "Fixed card");
     const bank = await account(ownerA, "Fixed bank");
     for (const type of ["bank", "cash"]) {
-      await expect(finance.updateAccount(ownerA, hdfc.id, { name: "Fixed card", type })).rejects.toMatchObject({
-        issues: [{ field: "type", message: "A credit card cannot be changed to another type" }],
+      await expect(
+        finance.updateAccount(ownerA, hdfc.id, { name: "Fixed card", type }),
+      ).rejects.toMatchObject({
+        issues: [
+          {
+            field: "type",
+            message: "A credit card cannot be changed to another type",
+          },
+        ],
       });
     }
-    await expect(finance.updateAccount(ownerA, bank.id, { name: "Fixed bank", type: "credit_card" })).rejects.toMatchObject({
-      issues: [{ field: "type", message: "A bank or cash account cannot be changed to a credit card" }],
+    await expect(
+      finance.updateAccount(ownerA, bank.id, {
+        name: "Fixed bank",
+        type: "credit_card",
+      }),
+    ).rejects.toMatchObject({
+      issues: [
+        {
+          field: "type",
+          message: "A bank or cash account cannot be changed to a credit card",
+        },
+      ],
     });
-    // Neither the name nor the type changed with the refused requests.
-    await expect(finance.updateAccount(ownerA, hdfc.id, { name: "Renamed card", type: "bank" })).rejects.toThrow(FinanceValidationError);
-    expect((await finance.getAccount(ownerA, hdfc.id)).account).toMatchObject({ name: "Fixed card", type: "credit_card" });
+    await expect(
+      finance.updateAccount(ownerA, hdfc.id, {
+        name: "Renamed card",
+        type: "bank",
+      }),
+    ).rejects.toThrow(FinanceValidationError);
+    expect((await finance.getAccount(ownerA, hdfc.id)).account).toMatchObject({
+      name: "Fixed card",
+      type: "credit_card",
+    });
 
-    await finance.updateAccount(ownerA, hdfc.id, { name: "Renamed card", type: "credit_card" });
-    await finance.updateAccount(ownerA, bank.id, { name: "Fixed bank", type: "cash" });
-    expect((await finance.getAccount(ownerA, hdfc.id)).account).toMatchObject({ name: "Renamed card", type: "credit_card" });
-    expect((await finance.getAccount(ownerA, bank.id)).account.type).toBe("cash");
-    expect(await ledgerKind(hdfc.ledgerAccountId)).toMatchObject({ kind: "liability" });
+    await finance.updateAccount(ownerA, hdfc.id, {
+      name: "Renamed card",
+      type: "credit_card",
+    });
+    await finance.updateAccount(ownerA, bank.id, {
+      name: "Fixed bank",
+      type: "cash",
+    });
+    expect((await finance.getAccount(ownerA, hdfc.id)).account).toMatchObject({
+      name: "Renamed card",
+      type: "credit_card",
+    });
+    expect((await finance.getAccount(ownerA, bank.id)).account.type).toBe(
+      "cash",
+    );
+    expect(await ledgerKind(hdfc.ledgerAccountId)).toMatchObject({
+      kind: "liability",
+    });
   });
 
   it("shares account-name uniqueness with bank and cash accounts", async () => {
     const name = `Shared ${randomUUID().slice(0, 8)}`;
     await account(ownerA, name);
-    await expect(card(ownerA, name.toUpperCase())).rejects.toMatchObject({ reason: "account-name-taken" });
+    await expect(card(ownerA, name.toUpperCase())).rejects.toMatchObject({
+      reason: "account-name-taken",
+    });
     const hdfc = await card(ownerA, `${name} card`);
-    await expect(account(ownerA, `${name} CARD`, { type: "cash" })).rejects.toMatchObject({ reason: "account-name-taken" });
-    await expect(finance.updateAccount(ownerA, hdfc.id, { name, type: "credit_card" })).rejects.toMatchObject({ reason: "account-name-taken" });
+    await expect(
+      account(ownerA, `${name} CARD`, { type: "cash" }),
+    ).rejects.toMatchObject({ reason: "account-name-taken" });
+    await expect(
+      finance.updateAccount(ownerA, hdfc.id, { name, type: "credit_card" }),
+    ).rejects.toMatchObject({ reason: "account-name-taken" });
   });
 
   it("takes no income or transfer, writing nothing (a card can only pay an expense)", async () => {
     const hdfc = await card(ownerA, "No-tx card");
     const other = await card(ownerA, "No-tx card 2");
-    const bank = await account(ownerA, "No-tx bank", { openingBalance: { amount: "100", date: today } });
+    const bank = await account(ownerA, "No-tx bank", {
+      openingBalance: { amount: "100", date: today },
+    });
     const salary = await category(ownerA, "Salary", "income");
     const before = await counts(seededA.ownerId);
     const attempts: [Record<string, unknown>, string][] = [
-      [{ kind: "income", destinationAccountId: hdfc.id, categoryId: salary.id }, "destinationAccountId"],
-      [{ kind: "transfer", sourceAccountId: bank.id, destinationAccountId: hdfc.id }, "destinationAccountId"],
-      [{ kind: "transfer", sourceAccountId: hdfc.id, destinationAccountId: bank.id }, "sourceAccountId"],
-      [{ kind: "transfer", sourceAccountId: hdfc.id, destinationAccountId: other.id }, "destinationAccountId"],
+      [
+        {
+          kind: "income",
+          destinationAccountId: hdfc.id,
+          categoryId: salary.id,
+        },
+        "destinationAccountId",
+      ],
+      [
+        {
+          kind: "transfer",
+          sourceAccountId: bank.id,
+          destinationAccountId: hdfc.id,
+        },
+        "destinationAccountId",
+      ],
+      [
+        {
+          kind: "transfer",
+          sourceAccountId: hdfc.id,
+          destinationAccountId: bank.id,
+        },
+        "sourceAccountId",
+      ],
+      [
+        {
+          kind: "transfer",
+          sourceAccountId: hdfc.id,
+          destinationAccountId: other.id,
+        },
+        "destinationAccountId",
+      ],
     ];
     for (const [intent, field] of attempts) {
-      await expect(finance.recordTransaction(ownerA, { amount: "10", date: today, idempotencyKey: key(), ...intent })).rejects.toMatchObject({
-        issues: [{ field, message: expect.stringMatching(/is a credit card; a card can only pay for an expense/) }],
+      await expect(
+        finance.recordTransaction(ownerA, {
+          amount: "10",
+          date: today,
+          idempotencyKey: key(),
+          ...intent,
+        }),
+      ).rejects.toMatchObject({
+        issues: [
+          {
+            field,
+            message: expect.stringMatching(
+              /is a credit card; a card can only pay for an expense/,
+            ),
+          },
+        ],
       });
     }
     expect(await counts(seededA.ownerId)).toEqual(before);
@@ -969,42 +1658,87 @@ describe("credit cards: liability-backed accounts (ADR 0008)", () => {
   });
 
   it("archives and restores a card with its history and balance kept", async () => {
-    const hdfc = await card(ownerA, "Archive card", { openingBalance: { amount: "700", date: today } });
+    const hdfc = await card(ownerA, "Archive card", {
+      openingBalance: { amount: "700", date: today },
+    });
     await finance.archiveAccount(ownerA, hdfc.id);
     const archived = await finance.getAccount(ownerA, hdfc.id);
-    expect(archived.lifecycle).toMatchObject({ canTransact: false, canRestore: true, canDelete: false });
+    expect(archived.lifecycle).toMatchObject({
+      canTransact: false,
+      canRestore: true,
+      canDelete: false,
+    });
     expect(archived.balance.toDecimalString()).toBe("700.00");
     await expect(
-      finance.correctOpeningBalance(ownerA, hdfc.id, { amount: "800", date: today, idempotencyKey: key() }),
-    ).rejects.toMatchObject({ issues: [expect.objectContaining({ field: "openingAmount" })] });
+      finance.correctOpeningBalance(ownerA, hdfc.id, {
+        amount: "800",
+        date: today,
+        idempotencyKey: key(),
+      }),
+    ).rejects.toMatchObject({
+      issues: [expect.objectContaining({ field: "openingAmount" })],
+    });
     await finance.restoreAccount(ownerA, hdfc.id);
-    expect((await finance.getAccount(ownerA, hdfc.id)).account.archivedAt).toBeNull();
+    expect(
+      (await finance.getAccount(ownerA, hdfc.id)).account.archivedAt,
+    ).toBeNull();
   });
 
   it("is idempotent: a retried card creation records one account and one opening entry", async () => {
-    const input = { name: "Retry card", type: "credit_card", openingBalance: { amount: "12000", date: today }, idempotencyKey: key() };
+    const input = {
+      name: "Retry card",
+      type: "credit_card",
+      openingBalance: { amount: "12000", date: today },
+      idempotencyKey: key(),
+    };
     const before = await counts(seededA.ownerId);
     const first = await finance.createAccount(ownerA, input);
-    expect(await finance.createAccount(ownerA, input)).toEqual({ value: first.value, replayed: true });
-    await expect(finance.createAccount(ownerA, { ...input, type: "bank" })).rejects.toThrow(IdempotencyConflictError);
-    await expect(finance.createAccount(ownerA, { ...input, openingBalance: { amount: "12001", date: today } })).rejects.toThrow(
-      IdempotencyConflictError,
-    );
+    expect(await finance.createAccount(ownerA, input)).toEqual({
+      value: first.value,
+      replayed: true,
+    });
+    await expect(
+      finance.createAccount(ownerA, { ...input, type: "bank" }),
+    ).rejects.toThrow(IdempotencyConflictError);
+    await expect(
+      finance.createAccount(ownerA, {
+        ...input,
+        openingBalance: { amount: "12001", date: today },
+      }),
+    ).rejects.toThrow(IdempotencyConflictError);
     const after = await counts(seededA.ownerId);
-    expect([after.accounts - before.accounts, after.entries - before.entries, after.transactions - before.transactions]).toEqual([1, 1, 1]);
+    expect([
+      after.accounts - before.accounts,
+      after.entries - before.entries,
+      after.transactions - before.transactions,
+    ]).toEqual([1, 1, 1]);
   });
 
   it("creates one card and one opening balance when card creation races itself", async () => {
     const pool = createPrismaClient(inject("local").appDatabaseUrl, 6);
     try {
       const concurrent = financeFor(pool);
-      const input = { name: `Race card ${randomUUID().slice(0, 6)}`, type: "credit_card", openingBalance: { amount: "12000", date: today }, idempotencyKey: key() };
-      const results = await Promise.allSettled(Array.from({ length: 6 }, () => concurrent.createAccount(ownerA, input)));
-      const values = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+      const input = {
+        name: `Race card ${randomUUID().slice(0, 6)}`,
+        type: "credit_card",
+        openingBalance: { amount: "12000", date: today },
+        idempotencyKey: key(),
+      };
+      const results = await Promise.allSettled(
+        Array.from({ length: 6 }, () =>
+          concurrent.createAccount(ownerA, input),
+        ),
+      );
+      const values = results.flatMap((r) =>
+        r.status === "fulfilled" ? [r.value] : [],
+      );
       expect(values).toHaveLength(6);
       expect(new Set(values.map((v) => v.value.id)).size).toBe(1);
       expect(values.filter((v) => !v.replayed)).toHaveLength(1);
-      const { rows } = await admin.query("SELECT count(*)::int AS n FROM finora.transactions WHERE destination_account_id = $1", [values[0]!.value.id]);
+      const { rows } = await admin.query(
+        "SELECT count(*)::int AS n FROM finora.transactions WHERE destination_account_id = $1",
+        [values[0]!.value.id],
+      );
       expect(rows[0].n).toBe(1);
       expect(await balanceOf(ownerA, values[0]!.value.id)).toBe("12000.00");
     } finally {
@@ -1013,17 +1747,31 @@ describe("credit cards: liability-backed accounts (ADR 0008)", () => {
   });
 
   it("never lets owner B see, open or change owner A's card", async () => {
-    const hdfc = await card(ownerA, "A private card", { openingBalance: { amount: "50", date: today } });
-    await expect(finance.getAccount(ownerB, hdfc.id)).rejects.toThrow(FinanceNotFoundError);
-    await expect(finance.setOpeningBalance(ownerB, hdfc.id, { amount: "1", date: today, idempotencyKey: key() })).rejects.toThrow(
+    const hdfc = await card(ownerA, "A private card", {
+      openingBalance: { amount: "50", date: today },
+    });
+    await expect(finance.getAccount(ownerB, hdfc.id)).rejects.toThrow(
       FinanceNotFoundError,
     );
-    await expect(finance.updateAccount(ownerB, hdfc.id, { name: "Stolen", type: "credit_card" })).rejects.toThrow(FinanceNotFoundError);
-    expect((await finance.getAccount(ownerA, hdfc.id)).account.name).toBe("A private card");
+    await expect(
+      finance.setOpeningBalance(ownerB, hdfc.id, {
+        amount: "1",
+        date: today,
+        idempotencyKey: key(),
+      }),
+    ).rejects.toThrow(FinanceNotFoundError);
+    await expect(
+      finance.updateAccount(ownerB, hdfc.id, {
+        name: "Stolen",
+        type: "credit_card",
+      }),
+    ).rejects.toThrow(FinanceNotFoundError);
+    expect((await finance.getAccount(ownerA, hdfc.id)).account.name).toBe(
+      "A private card",
+    );
   });
 });
 
-/** An owner with nothing else, for exact equity totals; deleted with the others. */
 async function freshOwner() {
   const seeded = await seedOwner(admin);
   extraOwners.push(seeded.ownerId);

@@ -1,15 +1,13 @@
 import { defineConfig, devices } from "@playwright/test";
 
-import { localAppEnv, readLocalSupabase } from "./scripts/lib/local-supabase.mjs";
+import {
+  localAppEnv,
+  readLocalSupabase,
+} from "./scripts/lib/local-supabase.mjs";
 
 const PORT = Number(process.env.PORT ?? 3100);
 const baseURL = `http://localhost:${PORT}`;
 
-/**
- * End-to-end tests run a production build (`npm run build` first) against the
- * LOCAL Supabase stack. Connection details come from `supabase status`; the
- * server's environment is set explicitly here, so .env files are not needed.
- */
 const local = readLocalSupabase();
 
 export default defineConfig({

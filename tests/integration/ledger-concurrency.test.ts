@@ -6,14 +6,14 @@ import { EntryAlreadyReversedError, type LedgerAccount } from "@/domain/ledger";
 import type { AuthorizedOwner } from "@/server/auth/types";
 import { createPrismaClient } from "@/server/db/client";
 
-import { adminClient, appClient, deleteOwners, seedOwner, type SeededOwner } from "./support/db";
+import {
+  adminClient,
+  appClient,
+  deleteOwners,
+  seedOwner,
+  type SeededOwner,
+} from "./support/db";
 import { asOwner, authorize, ledgerFor, line, newKey } from "./support/ledger";
-
-/**
- * Concurrent requests through separate pooled connections. Each scenario runs
- * PARALLEL copies of the same operation and checks there is exactly one
- * accounting effect.
- */
 
 const PARALLEL = 8;
 const prisma = createPrismaClient(inject("local").appDatabaseUrl, PARALLEL);
@@ -36,8 +36,16 @@ beforeAll(async () => {
   admin = await adminClient();
   seeded = await seedOwner(admin);
   owner = await authorize(prisma, seeded.subject);
-  cash = await ledger.createAccount(owner, { name: "Cash", kind: "asset", currency: "INR" });
-  income = await ledger.createAccount(owner, { name: "Income", kind: "income", currency: "INR" });
+  cash = await ledger.createAccount(owner, {
+    name: "Cash",
+    kind: "asset",
+    currency: "INR",
+  });
+  income = await ledger.createAccount(owner, {
+    name: "Income",
+    kind: "income",
+    currency: "INR",
+  });
 });
 
 afterAll(async () => {
@@ -58,7 +66,9 @@ describe("concurrent duplicates", () => {
         lines: [line(cash.id, "debit", "10"), line(income.id, "credit", "10")],
       }),
     );
-    const fulfilled = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    const fulfilled = results.flatMap((r) =>
+      r.status === "fulfilled" ? [r.value] : [],
+    );
     expect(fulfilled).toHaveLength(PARALLEL);
     expect(new Set(fulfilled.map((r) => r.entry.id)).size).toBe(1);
     expect(fulfilled.filter((r) => !r.replayed)).toHaveLength(1);
@@ -72,8 +82,12 @@ describe("concurrent duplicates", () => {
       description: "Draft",
       lines: [line(cash.id, "debit", "3"), line(income.id, "credit", "3")],
     });
-    const results = await times(PARALLEL, () => ledger.postDraft(owner, draft.id));
-    const fulfilled = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    const results = await times(PARALLEL, () =>
+      ledger.postDraft(owner, draft.id),
+    );
+    const fulfilled = results.flatMap((r) =>
+      r.status === "fulfilled" ? [r.value] : [],
+    );
     expect(fulfilled).toHaveLength(PARALLEL);
     expect(fulfilled.filter((r) => !r.replayed)).toHaveLength(1);
     expect((await net(cash)) - before).toBe(300n);
@@ -95,10 +109,13 @@ describe("concurrent duplicates", () => {
       }),
     );
     const fulfilled = results.filter((r) => r.status === "fulfilled");
-    const rejected = results.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
+    const rejected = results.flatMap((r) =>
+      r.status === "rejected" ? [r.reason] : [],
+    );
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(PARALLEL - 1);
-    for (const reason of rejected) expect(reason).toBeInstanceOf(EntryAlreadyReversedError);
+    for (const reason of rejected)
+      expect(reason).toBeInstanceOf(EntryAlreadyReversedError);
     expect((await net(cash)) - before).toBe(-700n);
   });
 
@@ -111,9 +128,15 @@ describe("concurrent duplicates", () => {
     });
     const key = newKey("same-rev");
     const results = await times(PARALLEL, () =>
-      ledger.reverseEntry(owner, entry.id, { entryDate: today, description: "Reverse", idempotencyKey: key }),
+      ledger.reverseEntry(owner, entry.id, {
+        entryDate: today,
+        description: "Reverse",
+        idempotencyKey: key,
+      }),
     );
-    const fulfilled = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    const fulfilled = results.flatMap((r) =>
+      r.status === "fulfilled" ? [r.value] : [],
+    );
     expect(fulfilled).toHaveLength(PARALLEL);
     expect(new Set(fulfilled.map((r) => r.entry.id)).size).toBe(1);
     expect(fulfilled.filter((r) => !r.replayed)).toHaveLength(1);
@@ -126,7 +149,10 @@ describe("concurrent duplicates", () => {
         entryDate: today,
         description: `Independent ${i}`,
         idempotencyKey: newKey(`ind${i}`),
-        lines: [line(cash.id, "debit", "1.01"), line(income.id, "credit", "1.01")],
+        lines: [
+          line(cash.id, "debit", "1.01"),
+          line(income.id, "credit", "1.01"),
+        ],
       }),
     );
     expect(results.every((r) => r.status === "fulfilled")).toBe(true);
@@ -166,11 +192,13 @@ describe("interleaved transactions (deterministic)", () => {
     });
   }
 
-  /** Resolves once `client`'s backend is waiting on a lock. */
   async function waitUntilBlocked(client: pg.Client) {
     const pid = (client as unknown as { processID: number }).processID;
     for (let i = 0; i < 100; i++) {
-      const { rows } = await admin.query("SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1", [pid]);
+      const { rows } = await admin.query(
+        "SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1",
+        [pid],
+      );
       if (rows[0]?.wait_event_type === "Lock") return;
       await new Promise((r) => setTimeout(r, 20));
     }
@@ -179,7 +207,9 @@ describe("interleaved transactions (deterministic)", () => {
 
   const begin = async (client: pg.Client) => {
     await client.query("BEGIN");
-    await client.query("SELECT set_config('finora.owner_id', $1, true)", [seeded.ownerId]);
+    await client.query("SELECT set_config('finora.owner_id', $1, true)", [
+      seeded.ownerId,
+    ]);
   };
 
   it("a line added while a post is in flight waits, then is refused", async () => {
@@ -188,7 +218,10 @@ describe("interleaved transactions (deterministic)", () => {
       [income.id, "credit", 500],
     ]);
     await begin(first);
-    await first.query("UPDATE finora.journal_entries SET status = 'posted' WHERE id = $1", [id]);
+    await first.query(
+      "UPDATE finora.journal_entries SET status = 'posted' WHERE id = $1",
+      [id],
+    );
 
     await begin(second);
     const insert = second.query(
@@ -202,7 +235,9 @@ describe("interleaved transactions (deterministic)", () => {
     );
     await waitUntilBlocked(second);
     await first.query("COMMIT");
-    expect(await settled).toMatch(/lines of a posted journal entry cannot be added/);
+    expect(await settled).toMatch(
+      /lines of a posted journal entry cannot be added/,
+    );
     await second.query("ROLLBACK");
   });
 
@@ -219,12 +254,18 @@ describe("interleaved transactions (deterministic)", () => {
     );
 
     await begin(second);
-    const posting = second.query("UPDATE finora.journal_entries SET status = 'posted' WHERE id = $1", [id]);
+    const posting = second.query(
+      "UPDATE finora.journal_entries SET status = 'posted' WHERE id = $1",
+      [id],
+    );
     await waitUntilBlocked(second);
-    await first.query("COMMIT"); // the draft is now unbalanced
+    await first.query("COMMIT");
     await posting;
     await expect(second.query("COMMIT")).rejects.toThrow(/unbalanced/);
-    const { rows } = await admin.query("SELECT status FROM finora.journal_entries WHERE id = $1", [id]);
+    const { rows } = await admin.query(
+      "SELECT status FROM finora.journal_entries WHERE id = $1",
+      [id],
+    );
     expect(rows[0].status).toBe("draft");
   });
 });

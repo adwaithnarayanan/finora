@@ -5,21 +5,30 @@ import { signInAs } from "./support/session";
 
 const users = e2eUsers();
 
-async function signIn(page: Page, email: string, password: string, path = "/login") {
+async function signIn(
+  page: Page,
+  email: string,
+  password: string,
+  path = "/login",
+) {
   await page.goto(path);
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Sign in" }).click();
 }
 
-/** The form's own message (Next.js also renders an empty route-announcer alert). */
 const formAlert = (page: Page) => page.locator("form").getByRole("alert");
 
 const homeHeading = (page: Page) =>
-  page.getByRole("heading", { level: 1, name: /know exactly where your money is/i });
+  page.getByRole("heading", {
+    level: 1,
+    name: /know exactly where your money is/i,
+  });
 
 const authCookies = async (page: Page) =>
-  (await page.context().cookies()).filter((c) => /-auth-token(\.\d+)?$/.test(c.name));
+  (await page.context().cookies()).filter((c) =>
+    /-auth-token(\.\d+)?$/.test(c.name),
+  );
 
 const GENERIC = "Invalid email or password.";
 
@@ -33,26 +42,39 @@ test.describe("unauthenticated access", () => {
     await expect(page).toHaveURL(/\/login\?next=%2Freports%3Fmonth%3D2026-10$/);
   });
 
-  test("protected HTML is never served to signed-out visitors", async ({ request }) => {
+  test("protected HTML is never served to signed-out visitors", async ({
+    request,
+  }) => {
     const response = await request.get("/", { maxRedirects: 0 });
     expect(response.status()).toBe(307);
     expect(response.headers()["location"]).toMatch(/\/login$/);
-    expect(await response.text()).not.toContain("Know exactly where your money is");
+    expect(await response.text()).not.toContain(
+      "Know exactly where your money is",
+    );
   });
 });
 
 test.describe("sign-in page", () => {
-  test("offers email and password only: no Google, recovery or sign-up controls", async ({ page }) => {
+  test("offers email and password only: no Google, recovery or sign-up controls", async ({
+    page,
+  }) => {
     await page.goto("/login");
     await expect(page.getByLabel("Email")).toBeVisible();
-    await expect(page.getByLabel("Password", { exact: true })).toHaveAttribute("type", "password");
+    await expect(page.getByLabel("Password", { exact: true })).toHaveAttribute(
+      "type",
+      "password",
+    );
     await expect(page.getByRole("button", { name: /google/i })).toHaveCount(0);
-    await expect(page.getByRole("link", { name: /forgot|reset|sign up|register/i })).toHaveCount(0);
+    await expect(
+      page.getByRole("link", { name: /forgot|reset|sign up|register/i }),
+    ).toHaveCount(0);
   });
 });
 
 test.describe("password sign-in", () => {
-  test("wrong password, unknown email and unverified email get the same generic error", async ({ page }) => {
+  test("wrong password, unknown email and unverified email get the same generic error", async ({
+    page,
+  }) => {
     for (const [email, password] of [
       [users.owner.email, "Wrong-password-123"],
       ["nobody@finora.test", "Wrong-password-123"],
@@ -66,7 +88,10 @@ test.describe("password sign-in", () => {
     }
   });
 
-  test("the owner signs in, sees the app, and signs out", async ({ page, context }) => {
+  test("the owner signs in, sees the app, and signs out", async ({
+    page,
+    context,
+  }) => {
     await signIn(page, users.owner.email, users.owner.password);
     await expect(page).toHaveURL(/\/$/);
     await expect(homeHeading(page)).toBeVisible();
@@ -79,8 +104,6 @@ test.describe("password sign-in", () => {
     await page.goto("/");
     await expect(page).toHaveURL(/\/login$/);
 
-    // Replaying the old cookies after sign-out does not restore access: the
-    // session was revoked on the Auth server, which is checked on every request.
     await context.addCookies(sessionCookies);
     await page.goto("/");
     await expect(page).toHaveURL(/\/login$/);
@@ -88,14 +111,28 @@ test.describe("password sign-in", () => {
   });
 
   test("a same-origin next path is honoured", async ({ page }) => {
-    await signIn(page, users.owner.email, users.owner.password, "/login?next=%2F%3Ffrom%3Dlink");
+    await signIn(
+      page,
+      users.owner.email,
+      users.owner.password,
+      "/login?next=%2F%3Ffrom%3Dlink",
+    );
     await expect(page).toHaveURL(/\/\?from=link$/);
     await page.getByRole("button", { name: "Sign out" }).click();
   });
 
-  for (const next of ["//evil.example/phish", "https://evil.example/", "/\\evil.example"]) {
+  for (const next of [
+    "//evil.example/phish",
+    "https://evil.example/",
+    "/\\evil.example",
+  ]) {
     test(`an off-site next (${next}) is ignored`, async ({ page }) => {
-      await signIn(page, users.owner.email, users.owner.password, `/login?next=${encodeURIComponent(next)}`);
+      await signIn(
+        page,
+        users.owner.email,
+        users.owner.password,
+        `/login?next=${encodeURIComponent(next)}`,
+      );
       await expect(page).toHaveURL(/^http:\/\/localhost:\d+\/$/);
       await page.getByRole("button", { name: "Sign out" }).click();
     });
@@ -111,7 +148,9 @@ test.describe("authenticated but not authorised", () => {
     test(`${label} is refused and signed out`, async ({ page }) => {
       await signIn(page, users[key].email, users[key].password);
       await expect(page).toHaveURL(/\/unauthorized$/);
-      await expect(page.getByRole("heading", { name: "No access" })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "No access" }),
+      ).toBeVisible();
       expect(await authCookies(page)).toEqual([]);
       await page.goto("/");
       await expect(page).toHaveURL(/\/login$/);
@@ -120,9 +159,11 @@ test.describe("authenticated but not authorised", () => {
 });
 
 test.describe("other sign-in methods cannot get in", () => {
-  test("the owner's account is refused with a session that was not a password login", async ({ page, context, baseURL }) => {
-    // Admin magic-link session (needs the secret key) and a simulated Google
-    // OAuth session: both are real Auth sessions for the provisioned owner.
+  test("the owner's account is refused with a session that was not a password login", async ({
+    page,
+    context,
+    baseURL,
+  }) => {
     for (const method of ["otp", "oauth"] as const) {
       await context.clearCookies();
       await signInAs(context, baseURL!, users.owner.email, method);
@@ -132,9 +173,16 @@ test.describe("other sign-in methods cannot get in", () => {
     }
   });
 
-  test("the deferred OAuth callback does nothing (404) and sets no session", async ({ page, context }) => {
+  test("the deferred OAuth callback does nothing (404) and sets no session", async ({
+    page,
+    context,
+  }) => {
     await context.clearCookies();
-    for (const query of ["?code=00000000-0000-4000-8000-000000000000", "?error=access_denied&error_code=signup_disabled", ""]) {
+    for (const query of [
+      "?code=00000000-0000-4000-8000-000000000000",
+      "?error=access_denied&error_code=signup_disabled",
+      "",
+    ]) {
       const response = await page.goto(`/auth/callback${query}`);
       expect(response?.status(), query || "no query").toBe(404);
     }
@@ -144,7 +192,11 @@ test.describe("other sign-in methods cannot get in", () => {
   test("removed recovery and email-link routes are gone", async ({ page }) => {
     await signIn(page, users.owner.email, users.owner.password);
     await expect(homeHeading(page)).toBeVisible();
-    for (const path of ["/forgot-password", "/reset-password", "/auth/confirm?token_hash=x&type=recovery"]) {
+    for (const path of [
+      "/forgot-password",
+      "/reset-password",
+      "/auth/confirm?token_hash=x&type=recovery",
+    ]) {
       const response = await page.goto(path);
       expect(response?.status(), path).toBe(404);
     }
