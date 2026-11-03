@@ -16,6 +16,15 @@ export { type AccountName, canonicalAccountName } from "./account-name";
 export { CATEGORY_KINDS, type CategoryKind, type CategoryRef, DEFAULT_CATEGORIES, parseCategoryKind } from "./categories";
 export { FinanceError, FinanceValidationError, type FieldIssue, IssueCollector } from "./errors";
 export {
+  type PurchaseRef,
+  type RefundFields,
+  checkLinkedRefund,
+  checkRefundAmount,
+  checkRefundablePurchase,
+  isRefundablePurchase,
+  remainingRefundable,
+} from "./refunds";
+export {
   InvalidFinanceInputError,
   MAX_NAME_LENGTH,
   MAX_NOTE_LENGTH,
@@ -38,4 +47,5 @@ export {
   parseTransactionIntent,
   planOpeningBalance,
   planTransaction,
+  requiredCategoryKind,
 } from "./transactions";

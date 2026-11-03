@@ -1,0 +1,23 @@
+-- Credit cards (docs/adr/0008-credit-card-accounts.md), Milestone 5D step 1 of
+-- 2: the transaction-kind enum value only.
+--
+-- PostgreSQL refuses to use a newly added enum value in the transaction that
+-- added it, so everything that depends on 'card_refund' is in the next
+-- migration (20261029000100_card_refunds), as 0600/0700 and the two 5C
+-- migrations did before it.
+--
+-- Keeping them in separate files does not depend on how the migration tool
+-- groups statements. `prisma migrate deploy` (7.10.1) does not reliably wrap a
+-- file in a transaction (see 20261026000100's header for the measurements),
+-- which in some shapes would also let a later statement in ONE file use the
+-- value; that is a property of the tool, not of PostgreSQL, so this split does
+-- not rely on it and stays correct either way.
+--
+-- Forward-only: an enum value cannot be dropped. Unused, it changes nothing.
+-- Between this migration and the next, no application code writes the new
+-- kind. A raw-SQL 'card_refund' row written in that window is refused by the
+-- `ELSE false` that 20261026000100 added to the transactions_shape CHECK, so
+-- unlike the 5C window there is no gap to document here.
+
+-- AlterEnum
+ALTER TYPE "finora"."transaction_kind" ADD VALUE 'card_refund';

@@ -9,7 +9,8 @@ import { IdempotencyConflictError } from "@/server/ledger/errors";
 
 import { runCleanup } from "./support/cleanup";
 import { seedOwner } from "./support/db";
-import { asOwner, authorize, financeFor } from "./support/ledger";
+import { asOwner, authorize, financeFor, ledgerFor } from "./support/ledger";
+import { historyOn } from "./support/pre-migration";
 import {
   type MigrationSet,
   type ScratchDatabase,
@@ -180,14 +181,24 @@ describe("migrations 20261026000000_card_payment_kind and 20261026000100_card_pa
     const { prisma, finance } = financeOn(scratch);
     const { seeded, owner, named } = await newOwner(db, finance, prisma);
 
-    // Representative 5B history: a bank account, a card, income, a card
-    // expense, an ordinary expense and a void.
-    const bank = (await finance.createAccount(owner, { name: "Axis", type: "bank", openingBalance: { amount: "50000", date: today }, idempotencyKey: randomUUID() })).value;
-    const card = (await finance.createAccount(owner, { name: "HDFC Card", type: "credit_card", openingBalance: { amount: "12000", date: today }, idempotencyKey: randomUUID() })).value;
-    await finance.recordTransaction(owner, { kind: "income", amount: "1000", date: today, destinationAccountId: bank.id, categoryId: named("Salary").id, idempotencyKey: randomUUID() });
-    await finance.recordTransaction(owner, { kind: "expense", amount: "1250", date: today, sourceAccountId: card.id, categoryId: named("Shopping").id, idempotencyKey: randomUUID() });
-    const spent = await finance.recordTransaction(owner, { kind: "expense", amount: "250", date: today, sourceAccountId: bank.id, categoryId: named("Groceries").id, idempotencyKey: randomUUID() });
-    await finance.voidTransaction(owner, spent.value.id, { date: today, idempotencyKey: randomUUID() });
+    // Representative 5B history: a bank account, a card, their opening
+    // balances, income, a card expense, an ordinary expense and a void. The
+    // accounts go through the service, but the transactions cannot: the
+    // finance store reads and writes columns that migrations after 5C add
+    // (see historyOn).
+    const bank = (await finance.createAccount(owner, { name: "Axis", type: "bank", idempotencyKey: randomUUID() })).value;
+    const card = (await finance.createAccount(owner, { name: "HDFC Card", type: "credit_card", idempotencyKey: randomUUID() })).value;
+    const history = historyOn({ db, ledger: ledgerFor(prisma), owner, ownerId: seeded.ownerId, date: today });
+    const equity = await history.openingEquity();
+    const salaryLedger = await history.mapCategory(named("Salary").id, "income");
+    const shoppingLedger = await history.mapCategory(named("Shopping").id, "expense");
+    const groceriesLedger = await history.mapCategory(named("Groceries").id, "expense");
+    await history.record({ kind: "opening_balance", amount: "50000", debit: bank.ledgerAccountId, credit: equity, destination: bank.id });
+    await history.record({ kind: "opening_balance", amount: "12000", debit: equity, credit: card.ledgerAccountId, destination: card.id });
+    await history.record({ kind: "income", amount: "1000", debit: bank.ledgerAccountId, credit: salaryLedger, destination: bank.id, category: named("Salary").id });
+    await history.record({ kind: "expense", amount: "1250", debit: shoppingLedger, credit: card.ledgerAccountId, source: card.id, category: named("Shopping").id });
+    const spent = await history.record({ kind: "expense", amount: "250", debit: groceriesLedger, credit: bank.ledgerAccountId, source: bank.id, category: named("Groceries").id });
+    await history.void(spent);
 
     // Before the migrations the kind does not exist at all, so not even raw
     // SQL can record one.
@@ -208,7 +219,12 @@ describe("migrations 20261026000000_card_payment_kind and 20261026000100_card_pa
     const shapeBefore = constraintsBefore.find((c) => c.conname === "transactions_shape")!;
     expect(shapeBefore.def).not.toMatch(/card_payment/);
 
-    deployMigrations(scratch.url); // the real project migrations, as on a deployment
+    // The real project migrations, as on a deployment, but stopping at 5C:
+    // this test's subject is those two files, and later milestones change the
+    // catalogs compared below.
+    const upTo5C = migrationSet({ through: CARD_PAYMENTS });
+    sets.push(upTo5C);
+    deployMigrations(scratch.url, upTo5C);
 
     expect(await migrationRows(db, CARD_PAYMENT_KIND)).toEqual([{ finished: true, rolled_back: false }]);
     expect(await migrationRows(db, CARD_PAYMENTS)).toEqual([{ finished: true, rolled_back: false }]);
@@ -235,6 +251,10 @@ describe("migrations 20261026000000_card_payment_kind and 20261026000100_card_pa
     // The enum gained exactly one value, at the end.
     const kinds = await db.query("SELECT unnest(enum_range(NULL::finora.transaction_kind))::text AS kind");
     expect(kinds.rows.map((r) => r.kind)).toEqual(["opening_balance", "income", "expense", "transfer", "card_payment"]);
+
+    // The remaining migrations, so the application path can be exercised too
+    // (this working tree's finance store needs the columns they add).
+    deployMigrations(scratch.url);
 
     // And now a card payment works, reducing the amount owed and the bank balance.
     expect((await finance.getAccount(owner, card.id)).balance.toDecimalString()).toBe("13250.00");
@@ -452,12 +472,12 @@ describe("card payments (migrated scratch database)", () => {
         [axis.id, wallet.id],
       ]) {
         await expect(pay(owner, { sourceAccountId: source, destinationAccountId: destination })).rejects.toMatchObject({
-          issues: [{ field: "destinationAccountId", message: expect.stringMatching(/is not a credit card; choose the card you are paying/) }],
+          issues: [{ field: "destinationAccountId", message: expect.stringMatching(/is not a credit card; choose a credit card/) }],
         });
       }
       // A card never pays another card.
       await expect(pay(owner, { sourceAccountId: hdfc.id, destinationAccountId: icici.id })).rejects.toMatchObject({
-        issues: [{ field: "sourceAccountId", message: expect.stringMatching(/is a credit card; a card can only pay for an expense or be paid/) }],
+        issues: [{ field: "sourceAccountId", message: expect.stringMatching(/is a credit card; a card can only pay for an expense, be paid by a card payment or be credited by a card refund/) }],
       });
       // And a card never pays itself: the same account on both sides is
       // refused while parsing, before any class is looked up.

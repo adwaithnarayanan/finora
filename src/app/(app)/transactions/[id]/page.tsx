@@ -8,10 +8,12 @@ import { Suspense } from "react";
 import { ConfirmAction } from "@/components/confirm-action";
 import { PageLoading } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
+import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatLedgerDate, todayInIndia } from "@/features/shared/format";
+import { formatLedgerDate, formatMoney, todayInIndia } from "@/features/shared/format";
 import { voidTransactionAction } from "@/features/transactions/actions";
 import { TransactionDetailsForm } from "@/features/transactions/details-form";
+import { TransactionList } from "@/features/transactions/transaction-list";
 import { lookupsFrom, toTransactionView } from "@/features/transactions/view";
 import { requireOwner } from "@/server/auth/session";
 import { FinanceNotFoundError, finance } from "@/server/finance";
@@ -33,7 +35,15 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
     if (error instanceof FinanceNotFoundError) notFound();
     throw error;
   });
-  const [accounts, categories] = await Promise.all([finance.listAccounts(owner), finance.listCategories(owner)]);
+  const [accounts, categories, refunds, refunded] = await Promise.all([
+    finance.listAccounts(owner),
+    finance.listCategories(owner),
+    // Null unless this is an expense a credit card paid for.
+    finance.getPurchaseRefunds(owner, id),
+    transaction.kind === "card_refund" && transaction.refundsTransactionId
+      ? finance.getTransaction(owner, transaction.refundsTransactionId)
+      : null,
+  ]);
   const lookups = lookupsFrom(
     accounts.map((a) => a.account),
     categories,
@@ -76,7 +86,13 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
         {transaction.destinationAccountId ? (
           <>
             <dt className="text-muted-foreground">
-              {transaction.kind === "opening_balance" ? "Account" : transaction.kind === "card_payment" ? "Card paid" : "To"}
+              {transaction.kind === "opening_balance"
+                ? "Account"
+                : transaction.kind === "card_payment"
+                  ? "Card paid"
+                  : transaction.kind === "card_refund"
+                    ? "Refunded to"
+                    : "To"}
             </dt>
             <dd>{link(transaction.destinationAccountId)}</dd>
           </>
@@ -85,6 +101,22 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
           <>
             <dt className="text-muted-foreground">Category</dt>
             <dd>{lookups.categories.get(transaction.categoryId)?.name}</dd>
+          </>
+        ) : null}
+        {transaction.kind === "card_refund" ? (
+          <>
+            <dt className="text-muted-foreground">Refund of</dt>
+            <dd>
+              {refunded ? (
+                <Link href={`/transactions/${refunded.id}`} className="underline underline-offset-4">
+                  {toTransactionView(refunded, lookups).title} of {formatMoney(refunded.amount)} on{" "}
+                  {formatLedgerDate(refunded.occurredOn)}
+                </Link>
+              ) : (
+                "A purchase that is not recorded in Finora (a merchant credit)"
+              )}
+              . It reduces the amount owed on the card and this category&apos;s expenses; it is not income.
+            </dd>
           </>
         ) : null}
         {transaction.voidedAt ? (
@@ -118,10 +150,42 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
             transactionId={transaction.id}
             payee={transaction.payee}
             note={transaction.note}
-            allowPayee={transaction.kind === "income" || transaction.kind === "expense"}
+            allowPayee={transaction.kind === "income" || transaction.kind === "expense" || transaction.kind === "card_refund"}
           />
         </CardContent>
       </Card>
+
+      {refunds ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Refunds</CardTitle>
+            <CardDescription>
+              A refund of this purchase credits the same expense category, so it reduces your expenses and the amount owed
+              on the card. It is never recorded as income.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4">
+            <p className="text-sm">
+              <span className="font-medium tabular-nums">{formatMoney(refunds.refunded)}</span> refunded of{" "}
+              <span className="tabular-nums">{formatMoney(refunds.purchase.amount)}</span>, leaving{" "}
+              <span className="font-medium tabular-nums">{formatMoney(refunds.remaining)}</span> refundable.
+            </p>
+            {refunds.refunds.length > 0 ? (
+              <TransactionList transactions={refunds.refunds.map((r) => toTransactionView(r, lookups))} empty="" />
+            ) : null}
+            {!transaction.voidedAt && !refunds.remaining.isZero() ? (
+              <div>
+                <Link
+                  href={`/transactions/new?type=card_refund&purchase=${transaction.id}`}
+                  className={buttonVariants({ size: "sm", variant: "outline" })}
+                >
+                  Record a refund
+                </Link>
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {!transaction.voidedAt && transaction.kind !== "opening_balance" ? (
         <Card>
@@ -132,13 +196,19 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <ConfirmAction
-              action={voidTransactionAction}
-              fields={{ transactionId: transaction.id, idempotencyKey: randomUUID(), date: todayInIndia() }}
-              label="Void transaction"
-              confirmLabel="Yes, void it"
-              description={`Void this ${view.kindLabel.toLowerCase()} of ${view.amount}? Balances return to what they were without it.`}
-            />
+            {refunds && !refunds.refunded.isZero() ? (
+              <p className="text-sm text-muted-foreground">
+                This purchase has refunds recorded against it. Void those first, so no refund is left refunding nothing.
+              </p>
+            ) : (
+              <ConfirmAction
+                action={voidTransactionAction}
+                fields={{ transactionId: transaction.id, idempotencyKey: randomUUID(), date: todayInIndia() }}
+                label="Void transaction"
+                confirmLabel="Yes, void it"
+                description={`Void this ${view.kindLabel.toLowerCase()} of ${view.amount}? Balances return to what they were without it.`}
+              />
+            )}
           </CardContent>
         </Card>
       ) : null}

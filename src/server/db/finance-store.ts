@@ -6,6 +6,7 @@ import type {
   CategoryRecord,
   FinanceStore,
   FinancialAccountRecord,
+  RefundedPurchaseRow,
   SystemLedgerPurpose,
   TransactionFilters,
   TransactionRecord,
@@ -123,6 +124,7 @@ export class PrismaFinanceStore implements FinanceStore {
       voidedAt: row.voidedAt,
       replacesTransactionId: row.replacesTransactionId,
       replacedByTransactionId: row.replacedBy?.id ?? null,
+      refundsTransactionId: row.refundsTransactionId,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     });
@@ -293,6 +295,7 @@ export class PrismaFinanceStore implements FinanceStore {
     note: string | null;
     journalEntryId: string;
     replacesTransactionId: string | null;
+    refundsTransactionId: string | null;
   }): Promise<TransactionRecord> {
     const created = await this.tx.financeTransaction.create({
       data: {
@@ -308,6 +311,7 @@ export class PrismaFinanceStore implements FinanceStore {
         note: row.note,
         journalEntryId: row.journalEntryId,
         replacesTransactionId: row.replacesTransactionId,
+        refundsTransactionId: row.refundsTransactionId,
       },
       include: transactionInclude,
     });
@@ -385,5 +389,44 @@ export class PrismaFinanceStore implements FinanceStore {
       take: filters.limit,
     });
     return Promise.all(rows.map((row) => this.toTransaction(row)));
+  }
+
+  async refundedMinor(purchaseId: string): Promise<bigint> {
+    // Summed in the database, as text so the exact integer survives the
+    // driver. The explicit owner filter is in addition to RLS, not instead.
+    const rows = await this.tx.$queryRaw<{ total: string }[]>`
+      SELECT coalesce(sum(amount_minor), 0)::text AS total
+        FROM finora.transactions
+       WHERE refunds_transaction_id = ${purchaseId}::uuid
+         AND owner_id = ${this.ownerId}::uuid
+         AND voided_at IS NULL`;
+    return BigInt(rows[0]?.total ?? "0");
+  }
+
+  async listRefunds(purchaseId: string): Promise<TransactionRecord[]> {
+    const rows = await this.tx.financeTransaction.findMany({
+      where: { refundsTransactionId: purchaseId },
+      include: transactionInclude,
+      orderBy: [{ occurredOn: "asc" }, { createdAt: "asc" }],
+    });
+    return Promise.all(rows.map((row) => this.toTransaction(row)));
+  }
+
+  async listRefundablePurchases(): Promise<RefundedPurchaseRow[]> {
+    const rows = await this.tx.financeTransaction.findMany({
+      // An archived card takes no new transactions, so its purchases are not
+      // candidates either.
+      where: { kind: "expense", voidedAt: null, source: { type: "credit_card", archivedAt: null } },
+      include: { ...transactionInclude, refundedBy: { where: { voidedAt: null }, select: { amountMinor: true } } },
+      orderBy: [{ occurredOn: "desc" }, { createdAt: "desc" }],
+      take: 200,
+    });
+    return Promise.all(
+      rows.map(async ({ refundedBy, ...row }) => ({
+        purchase: await this.toTransaction(row),
+        // Exact integer arithmetic; never a Number.
+        refundedMinor: refundedBy.reduce((total, r) => total + r.amountMinor, 0n),
+      })),
+    );
   }
 }

@@ -10,6 +10,7 @@ import { toAccountOptions } from "@/features/accounts/view";
 import { DefaultCategoriesButton } from "@/features/categories/default-categories-button";
 import { todayInIndia } from "@/features/shared/format";
 import { TransactionForm } from "@/features/transactions/transaction-form";
+import { lookupsFrom, toRefundablePurchaseOptions } from "@/features/transactions/view";
 import { requireOwner } from "@/server/auth/session";
 import { finance } from "@/server/finance";
 
@@ -20,7 +21,7 @@ export default function NewTransactionPage({ searchParams }: PageProps<"/transac
     <div className="max-w-2xl">
       <PageHeader
         title="Record transaction"
-        description="Income, an expense (from an account or on a credit card), a transfer between your accounts, or a payment towards a credit card."
+        description="Income, an expense (from an account or on a credit card), a transfer between your accounts, a payment towards a credit card, or a refund onto one."
       />
       <Suspense fallback={<PageLoading />}>
         <NewTransaction searchParams={searchParams} />
@@ -33,7 +34,13 @@ async function NewTransaction({ searchParams }: Pick<PageProps<"/transactions/ne
   const owner = await requireOwner();
   const params = await searchParams;
   // Read-only: rendering never creates categories (defaults are added on request).
-  const [accounts, categories] = await Promise.all([finance.listAccounts(owner), finance.listCategories(owner)]);
+  // The refundable purchases are always loaded: the form lets the owner switch
+  // to a refund without reloading the page.
+  const [accounts, categories, refundable] = await Promise.all([
+    finance.listAccounts(owner),
+    finance.listCategories(owner),
+    finance.listRefundablePurchases(owner),
+  ]);
   const options = toAccountOptions(accounts);
   if (options.length === 0) {
     return (
@@ -54,7 +61,11 @@ async function NewTransaction({ searchParams }: Pick<PageProps<"/transactions/ne
   const missing = (["income", "expense"] as const).filter((kind) => !usable(kind));
   // An explicit ?type= wins; otherwise start on a kind that can be recorded.
   const type =
-    params.type === "income" || params.type === "transfer" || params.type === "expense" || params.type === "card_payment"
+    params.type === "income" ||
+    params.type === "transfer" ||
+    params.type === "expense" ||
+    params.type === "card_payment" ||
+    params.type === "card_refund"
       ? params.type
       : usable("expense")
         ? "expense"
@@ -63,10 +74,23 @@ async function NewTransaction({ searchParams }: Pick<PageProps<"/transactions/ne
           : "transfer";
   // ?account= (from an account's page) preselects that account on the side the
   // form can use it: the paying account for an expense (any) or a transfer
-  // (bank or cash), and the card being paid for a card payment.
+  // (bank or cash), and the card being paid or credited for a card payment or
+  // a card refund.
   const named = options.find((o) => o.id === params.account);
   const preselectedSource = named && (type === "expense" || (type === "transfer" && !named.card)) ? named : undefined;
-  const preselectedCard = named && type === "card_payment" && named.card ? named : undefined;
+  const preselectedCard = named && (type === "card_payment" || type === "card_refund") && named.card ? named : undefined;
+  // ?purchase= (from a card purchase's page) preselects that purchase and the
+  // card that paid for it. Only purchases that are still refundable are
+  // offered, so a fully refunded or voided one simply does not match.
+  const purchases = toRefundablePurchaseOptions(
+    refundable,
+    lookupsFrom(
+      accounts.map((a) => a.account),
+      categories,
+    ),
+  );
+  const namedPurchase = type === "card_refund" ? purchases.find((p) => p.id === params.purchase) : undefined;
+  const refundCard = namedPurchase?.cardAccountId ?? preselectedCard?.id;
   return (
     <div className="grid gap-6">
       {categories.length === 0 ? (
@@ -102,10 +126,12 @@ async function NewTransaction({ searchParams }: Pick<PageProps<"/transactions/ne
         today={todayInIndia()}
         initialKind={type}
         {...(preselectedSource ? { initialSourceAccountId: preselectedSource.id } : {})}
-        {...(preselectedCard ? { initialDestinationAccountId: preselectedCard.id } : {})}
+        {...(refundCard ? { initialDestinationAccountId: refundCard } : {})}
+        {...(namedPurchase ? { initialPurchaseId: namedPurchase.id } : {})}
         accounts={options}
         incomeCategories={active.filter((c) => c.kind === "income").map((c) => ({ id: c.id, label: c.name }))}
         expenseCategories={active.filter((c) => c.kind === "expense").map((c) => ({ id: c.id, label: c.name }))}
+        purchases={purchases}
       />
     </div>
   );

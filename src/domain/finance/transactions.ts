@@ -3,12 +3,12 @@ import { Money, MoneyError, sameCurrency } from "@/domain/money";
 import { isCanonicalUuid } from "@/domain/shared/uuid";
 
 import type { AccountRef } from "./accounts";
-import type { CategoryRef } from "./categories";
+import type { CategoryKind, CategoryRef } from "./categories";
 import { IssueCollector } from "./errors";
 import { parseNote, parsePayee } from "./text";
 
 /** Ordinary transaction types a user can record. */
-export const TRANSACTION_KINDS = ["income", "expense", "transfer", "card_payment"] as const;
+export const TRANSACTION_KINDS = ["income", "expense", "transfer", "card_payment", "card_refund"] as const;
 export type TransactionKind = (typeof TRANSACTION_KINDS)[number];
 
 /** Every kind a transaction record can have (opening balances are recorded separately). */
@@ -19,8 +19,24 @@ export const RECORD_KIND_LABELS: Record<RecordKind, string> = {
   expense: "Expense",
   transfer: "Transfer",
   card_payment: "Card payment",
+  card_refund: "Card refund",
   opening_balance: "Opening balance",
 };
+
+/**
+ * The kind of category a transaction kind posts to, or null for the kinds
+ * that touch none (transfers, card payments, opening balances).
+ *
+ * A card refund posts to an *expense* category and CREDITS it, so it gives
+ * back what that category was charged: expenses for the period fall and no
+ * income is recorded. It is deliberately not an income category, so a refund
+ * can never be filed as salary, interest or any other income.
+ */
+export function requiredCategoryKind(kind: RecordKind): CategoryKind | null {
+  if (kind === "income") return "income";
+  if (kind === "expense" || kind === "card_refund") return "expense";
+  return null;
+}
 
 /**
  * Kinds with an account on both sides: money leaves the source and reaches
@@ -68,6 +84,26 @@ export type TransactionIntent =
       readonly sourceAccountId: string;
       readonly destinationAccountId: string;
       readonly note: string | null;
+    }
+  | {
+      /** Money a merchant gave back onto a credit card (ADR 0008). */
+      readonly kind: "card_refund";
+      readonly amount: string;
+      readonly date: LedgerDate;
+      /** The card being credited. Nothing pays a refund, so there is no source. */
+      readonly destinationAccountId: string;
+      /**
+       * The recorded card purchase this refunds, or null for a merchant
+       * credit whose purchase Finora never recorded. When it is set the
+       * category is the purchase's own, and `categoryId` is null: the server
+       * takes it from the purchase so the credit lands on exactly the expense
+       * account the purchase debited.
+       */
+      readonly refundsTransactionId: string | null;
+      /** An expense category. Required for an unlinked refund only. */
+      readonly categoryId: string | null;
+      readonly payee: string | null;
+      readonly note: string | null;
     };
 
 const AMOUNT_SYNTAX = /^\d{1,19}(\.\d{1,6})?$/;
@@ -90,7 +126,7 @@ export function parseTransactionIntent(raw: Readonly<Record<string, unknown>>): 
   const issues = new IssueCollector();
   const kind = raw["kind"];
   if (!(TRANSACTION_KINDS as readonly unknown[]).includes(kind)) {
-    issues.add("kind", "Choose income, expense, transfer or card payment");
+    issues.add("kind", "Choose income, expense, transfer, card payment or card refund");
     issues.throwIfAny();
   }
   const amountText = typeof raw["amount"] === "string" ? raw["amount"].trim() : "";
@@ -111,6 +147,24 @@ export function parseTransactionIntent(raw: Readonly<Record<string, unknown>>): 
     const categoryId = requireId(issues, "categoryId", raw["categoryId"], "an expense category");
     const payee = issues.capture("payee", () => parsePayee(raw["payee"])) ?? null;
     intent = { kind, amount: amountText, date: date!, sourceAccountId, categoryId, payee, note };
+  } else if (kind === "card_refund") {
+    const destinationAccountId = requireId(issues, "destinationAccountId", raw["destinationAccountId"], "the card the refund went to");
+    // Linked refund (a purchase recorded in Finora) or unlinked merchant
+    // credit. A link takes its category from the purchase, so no category is
+    // read; without one, an expense category is required.
+    //
+    // `refundMode` states which the client meant, so that choosing "a
+    // recorded purchase" and then not picking one is reported against the
+    // purchase field rather than silently becoming an unlinked refund that
+    // demands a category the form is not showing. Without it (any caller
+    // other than the form), the presence of a link decides.
+    const link = raw["refundsTransactionId"];
+    const mode = raw["refundMode"];
+    const linked = mode === "linked" || (mode !== "unlinked" && link !== undefined && link !== null && link !== "");
+    const refundsTransactionId = linked ? requireId(issues, "refundsTransactionId", link, "the purchase being refunded") : null;
+    const categoryId = linked ? null : requireId(issues, "categoryId", raw["categoryId"], "the expense category being refunded");
+    const payee = issues.capture("payee", () => parsePayee(raw["payee"])) ?? null;
+    intent = { kind, amount: amountText, date: date!, destinationAccountId, refundsTransactionId, categoryId, payee, note };
   } else {
     // transfer and card_payment share a shape: two accounts, no category, no payee.
     const card = kind === "card_payment";
@@ -177,16 +231,17 @@ export function parseAmountFor(issues: IssueCollector, field: string, amount: st
  * The class an account must have to take one side of a transaction:
  *   "asset"  a bank or cash account (income, transfers, and the paying side
  *            of a card payment);
- *   "card"   a credit card (the paid side of a card payment);
+ *   "card"   a credit card (the paid side of a card payment, and the side a
+ *            card refund credits);
  *   "any"    either (the source of an expense, which a card may pay).
  */
 type Expected = "asset" | "card" | "any";
 
 /**
  * The account exists, is not archived, and can take this side of an ordinary
- * transaction. A credit card can pay an expense and be paid by a card
- * payment; refunds, card income and transfers involving a card are still not
- * supported (ADR 0008).
+ * transaction. A credit card can pay an expense, be paid by a card payment
+ * and be credited by a card refund; card income and transfers involving a
+ * card are still not supported (ADR 0008).
  */
 function requireUsable(issues: IssueCollector, field: string, account: AccountRef | undefined, expected: Expected): account is AccountRef {
   if (!account) {
@@ -200,12 +255,12 @@ function requireUsable(issues: IssueCollector, field: string, account: AccountRe
   if (expected === "asset" && account.ledgerKind !== "asset") {
     issues.add(
       field,
-      `${account.name} is a credit card; a card can only pay for an expense or be paid by a card payment (refunds and transfers involving a card are not supported yet)`,
+      `${account.name} is a credit card; a card can only pay for an expense, be paid by a card payment or be credited by a card refund (transfers involving a card are not supported)`,
     );
     return false;
   }
   if (expected === "card" && account.ledgerKind !== "liability") {
-    issues.add(field, `${account.name} is not a credit card; choose the card you are paying`);
+    issues.add(field, `${account.name} is not a credit card; choose a credit card`);
     return false;
   }
   return true;
@@ -227,11 +282,16 @@ const withPayee = (label: string, joiner: string, payee: string | null) => (paye
  *   expense       Dr category (expense)   Cr source (asset, or credit-card liability)
  *   transfer      Dr destination asset    Cr source asset
  *   card_payment  Dr destination card     Cr source asset
+ *   card_refund   Dr destination card     Cr category (expense)
  * For a card expense, the credit increases the amount owed (a liability's
  * normal balance), as spending from a bank account decreases what is held. A
  * card payment is the mirror: the debit on the card reduces the amount owed
  * and the credit reduces what the paying account holds. It debits no expense
  * category and is neither income nor an expense.
+ * A card refund is the exact mirror of a card expense: the debit on the card
+ * reduces the amount owed (or builds a credit balance) and the credit on the
+ * expense category gives back what it was charged, so expenses for the period
+ * fall. It is never income, and it is never an income category.
  * The note travels as the first line's memo, so it is part of the ledger's
  * idempotency fingerprint and audit trail.
  */
@@ -241,7 +301,8 @@ export function planTransaction(intent: TransactionIntent, resolved: ResolvedTra
   // an income or expense touches, else the destination (as for a transfer).
   const accountField = intent.kind === "expense" ? "sourceAccountId" : "destinationAccountId";
   const account = intent.kind === "expense" ? resolved.source : resolved.destination;
-  const expected: Expected = intent.kind === "expense" ? "any" : intent.kind === "card_payment" ? "card" : "asset";
+  const expected: Expected =
+    intent.kind === "expense" ? "any" : intent.kind === "card_payment" || intent.kind === "card_refund" ? "card" : "asset";
   if (!requireUsable(issues, accountField, account, expected)) issues.throwIfAny();
   const amount = parseAmountFor(issues, "amount", intent.amount, account!);
 
@@ -274,19 +335,26 @@ export function planTransaction(intent: TransactionIntent, resolved: ResolvedTra
   }
 
   const category = resolved.category;
+  // A card refund posts to an expense category, like an expense, but credits
+  // it instead of debiting it.
+  const neededKind = requiredCategoryKind(intent.kind)!;
   if (!category) issues.add("categoryId", "That category does not exist");
-  else if (category.kind !== intent.kind) issues.add("categoryId", `Choose an ${intent.kind} category`);
+  else if (category.kind !== neededKind) issues.add("categoryId", `Choose an ${neededKind} category`);
   else if (category.archived) issues.add("categoryId", `${category.name} is archived`);
   else if (!resolved.categoryLedgerAccountId) issues.add("categoryId", "That category has no ledger account");
   issues.throwIfAny();
 
   const counter = resolved.categoryLedgerAccountId!;
-  if (intent.kind === "income") {
+  if (intent.kind === "income" || intent.kind === "card_refund") {
+    // Same sides for both (Dr the account, Cr the category), different
+    // meaning: income credits an income account, a refund credits the expense
+    // account the purchase debited.
     return {
-      kind: "income",
+      kind: intent.kind,
       amount: amount!,
       date: intent.date,
-      description: withPayee("Income", "from", intent.payee),
+      description:
+        intent.kind === "income" ? withPayee("Income", "from", intent.payee) : withPayee("Card refund", "from", intent.payee),
       lines: [line(account!.ledgerAccountId, "debit", amount!, intent.note), line(counter, "credit", amount!, null)],
     };
   }

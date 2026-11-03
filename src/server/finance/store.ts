@@ -39,8 +39,17 @@ export interface TransactionRecord {
   readonly voidedAt: Date | null;
   readonly replacesTransactionId: string | null;
   readonly replacedByTransactionId: string | null;
+  /** On a card refund: the recorded purchase it refunds, if any (ADR 0008). */
+  readonly refundsTransactionId: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
+}
+
+/** A card purchase with how much of it its still-active refunds cover. */
+export interface RefundedPurchaseRow {
+  readonly purchase: TransactionRecord;
+  /** Sum of the purchase's non-voided refunds, in its minor units. */
+  readonly refundedMinor: bigint;
 }
 
 export interface TransactionFilters {
@@ -113,6 +122,7 @@ export interface FinanceStore {
     note: string | null;
     journalEntryId: string;
     replacesTransactionId: string | null;
+    refundsTransactionId: string | null;
   }): Promise<TransactionRecord>;
   findTransaction(id: string): Promise<TransactionRecord | null>;
   lockTransaction(id: string): Promise<TransactionRecord | null>;
@@ -122,4 +132,19 @@ export interface FinanceStore {
   linkVoid(id: string, reversalEntryId: string): Promise<void>;
   updateTransactionDetails(id: string, details: { payee: string | null; note: string | null }): Promise<void>;
   listTransactions(filters: TransactionFilters): Promise<TransactionRecord[]>;
+
+  /**
+   * Total of the still-active (non-voided) refunds of `purchaseId`, in that
+   * transaction's minor units; 0 when there are none. Callers that are about
+   * to write a refund must hold the purchase row (`lockTransaction`) first,
+   * or two concurrent refunds can both read the same total (ADR 0008).
+   */
+  refundedMinor(purchaseId: string): Promise<bigint>;
+  /** Every refund of `purchaseId`, voided ones included, oldest first. */
+  listRefunds(purchaseId: string): Promise<TransactionRecord[]>;
+  /**
+   * Active expenses paid by an active credit card, newest first, each with
+   * its refunded total: the candidates for a linked refund.
+   */
+  listRefundablePurchases(): Promise<RefundedPurchaseRow[]>;
 }

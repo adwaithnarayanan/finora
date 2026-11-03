@@ -299,6 +299,89 @@ the row cannot be written at all, and with the enum value but not
 writing nothing. If 0500 is still pending, the 0500 window above applies to
 the whole run.
 
+### Card-refund migrations (Milestone 5D)
+
+**Status: not run against hosted Supabase.** `20261029000000_card_refund_kind`
+and `20261029000100_card_refunds` were tested only on local scratch databases
+(applied on top of the 5C migrations with existing bank, cash, card,
+card-expense, card-payment and voided data); that does not establish hosted
+readiness.
+
+Together they let a merchant credit money back onto a card as a new
+transaction kind, `card_refund`, either linked to a recorded card purchase or
+unlinked (ADR 0008, "Card refunds"). A refund debits the card and credits the
+expense category, so the amount owed and that category's expenses both fall;
+it is never income.
+
+- `20261029000000_card_refund_kind` adds only the enum value `card_refund` to
+  `finora.transaction_kind`, for the same PostgreSQL reason as 0600 and
+  `20261026000000`. Unused, it changes nothing, and a raw-SQL row with the new
+  kind written before the next file is already refused by the `ELSE false` in
+  `transactions_shape`.
+- `20261029000100_card_refunds`:
+  - adds the nullable column `refunds_transaction_id` with a composite foreign
+    key to `(id, owner_id)` and the row CHECK `transactions_refund_link` (only
+    a `card_refund` may set it, never to itself);
+  - replaces `transactions_shape` with a `card_refund` branch (the `ELSE
+    false` stays);
+  - creates `transactions_refunds_idx`;
+  - replaces `transactions_insert_guard`, `transactions_update_guard` and
+    `assert_transaction_valid`.
+
+  It writes no row and adds or removes no table, enum value, grant, policy,
+  trigger, owner or security attribute. `finora_app` gains `SELECT, INSERT` on
+  the new column from its existing table-level grants and deliberately **not**
+  `UPDATE`, whose grant stays column-listed (`payee`, `note`,
+  `reversal_entry_id`), so the runtime role can never move or clear a refund's
+  link.
+
+**One rule is relaxed, not weakened.** A category's kind no longer has to
+*equal* the transaction's kind; it has to equal the kind the transaction
+*requires*, which is unchanged for income and expenses and is `expense` for a
+card refund. Every existing row still satisfies it, which is why the two new
+constraints and the replaced CHECK all validate without a refusal (the test
+asserts all three come out `convalidated`).
+
+**Locks: plan a quiet moment**, as for `20261026000100` and for the same
+reasons. The `ALTER TABLE` takes **ACCESS EXCLUSIVE** on `finora.transactions`
+for the column, the foreign key and both CHECKs, so reads and writes of
+transactions wait until it commits. `ADD COLUMN` of a nullable column with no
+default does not rewrite the table, and on a brand-new all-NULL column neither
+the foreign key nor `transactions_refund_link` can reject anything, so the
+work is a validation scan of a small table. The file sets `lock_timeout = '5s'`
+(a plain `SET`, for the reason measured on `20261026000100`) and takes the lock
+explicitly, which also gives it one transaction.
+
+**Recovery differs from 5C in one way worth knowing.** As before:
+`npx prisma migrate resolve --rolled-back 20261029000100_card_refunds` then
+redeploy. But re-running this file from the start is **not** idempotent in
+effect: `ADD COLUMN` and `ADD CONSTRAINT` have no `IF NOT EXISTS`, so they fail
+if a previous attempt committed them. The explicit `LOCK TABLE` gives the file
+one transaction, so a failure rolls all of it back and that state should not
+arise; if it somehow does, drop `refunds_transaction_id`,
+`transactions_refund_link` and `transactions_refunds_fkey` before redeploying,
+and check `transactions_shape` and the three function bodies against the file.
+A failure of `20261029000100` leaves `20261029000000`'s enum value applied,
+which is harmless.
+
+**Prerequisite and order.** The 5C migrations applied (check with
+`npx prisma migrate status`). Then migrate (both files, normally one
+`npm run db:migrate:deploy` run), then deploy the 5D application code. Code
+already running (4D through 5C) never records a card refund, so migrating
+ahead of the deploy is safe.
+
+**The 5D code needs `20261029000100` for every transaction, not only refunds.**
+Its finance store reads and writes `refunds_transaction_id` on every
+transaction row, so deployed against a 5C database it fails to record even an
+ordinary expense ("The column `refunds_transaction_id` ... does not exist").
+Migrate first, without exception. This is stricter than 5B and 5C, where the
+new code only failed on the new kind.
+
+**After deploying,** check that a card purchase's page shows "0.00 refunded of
+…", that a linked refund of part of it reduces the amount owed and the
+category's expenses, and that the purchase then refuses to be voided until its
+refunds are voided.
+
 Read-only check after deploying (expect `card_payment` last, and a
 `transactions_shape` definition that mentions it):
 

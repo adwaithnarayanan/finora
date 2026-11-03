@@ -9,7 +9,8 @@ import { IdempotencyConflictError } from "@/server/ledger/errors";
 
 import { runCleanup } from "./support/cleanup";
 import { seedOwner } from "./support/db";
-import { asOwner, authorize, financeFor } from "./support/ledger";
+import { asOwner, authorize, financeFor, ledgerFor } from "./support/ledger";
+import { historyOn } from "./support/pre-migration";
 import {
   type MigrationSet,
   type ScratchDatabase,
@@ -28,7 +29,8 @@ import {
 const CARD_EXPENSES = "20261025000800_card_expenses";
 const BEFORE = "20261025000700_account_ledger_class";
 const today = "2026-10-25";
-const UNSUPPORTED = /a credit card can only pay an expense or be paid by a card payment; income and transfers use bank and cash accounts only/;
+const UNSUPPORTED =
+  /a credit card can only pay an expense, be paid by a card payment or be credited by a card refund; income and transfers use bank and cash accounts only/;
 
 const scratches: ScratchDatabase[] = [];
 const sets: MigrationSet[] = [];
@@ -158,16 +160,22 @@ describe("migration 20261025000800_card_expenses", () => {
     const { prisma, finance } = financeOn(scratch);
     const { seeded, owner, named } = await newOwner(db, finance, prisma);
 
-    const bank = (await finance.createAccount(owner, { name: "Axis", type: "bank", openingBalance: { amount: "50000", date: today }, idempotencyKey: randomUUID() })).value;
-    const card = (await finance.createAccount(owner, { name: "HDFC Card", type: "credit_card", openingBalance: { amount: "12000", date: today }, idempotencyKey: randomUUID() })).value;
-    await finance.recordTransaction(owner, { kind: "income", amount: "1000", date: today, destinationAccountId: bank.id, categoryId: named("Salary").id, idempotencyKey: randomUUID() });
-    const spent = await finance.recordTransaction(owner, { kind: "expense", amount: "250", date: today, sourceAccountId: bank.id, categoryId: named("Groceries").id, idempotencyKey: randomUUID() });
-    await finance.voidTransaction(owner, spent.value.id, { date: today, idempotencyKey: randomUUID() });
+    // The accounts go through the service, but the transactions cannot: the
+    // finance store reads and writes columns that migrations after 0800 add
+    // (see historyOn).
+    const bank = (await finance.createAccount(owner, { name: "Axis", type: "bank", idempotencyKey: randomUUID() })).value;
+    const card = (await finance.createAccount(owner, { name: "HDFC Card", type: "credit_card", idempotencyKey: randomUUID() })).value;
+    const history = historyOn({ db, ledger: ledgerFor(prisma), owner, ownerId: seeded.ownerId, date: today });
+    const equity = await history.openingEquity();
+    const salaryLedger = await history.mapCategory(named("Salary").id, "income");
+    const expenseLedger = await history.mapCategory(named("Groceries").id, "expense");
+    await history.record({ kind: "opening_balance", amount: "50000", debit: bank.ledgerAccountId, credit: equity, destination: bank.id });
+    await history.record({ kind: "opening_balance", amount: "12000", debit: equity, credit: card.ledgerAccountId, destination: card.id });
+    await history.record({ kind: "income", amount: "1000", debit: bank.ledgerAccountId, credit: salaryLedger, destination: bank.id, category: named("Salary").id });
+    const spent = await history.record({ kind: "expense", amount: "250", debit: expenseLedger, credit: bank.ledgerAccountId, source: bank.id, category: named("Groceries").id });
+    await history.void(spent);
 
     // Before 0800 the deferred check refuses a card expense, even one whose entry matches the template.
-    const expenseLedger = (
-      await db.query("SELECT ledger_account_id::text AS id FROM finora.category_ledger_accounts WHERE category_id = $1", [named("Groceries").id])
-    ).rows[0].id as string;
     const rawCardExpense = () =>
       asOwner(app, seeded.ownerId, async () => {
         const { rows } = await app.query(
@@ -192,7 +200,12 @@ describe("migration 20261025000800_card_expenses", () => {
     const functionsBefore = await functionCatalog(db);
     const triggersBefore = await triggerCatalog(db);
 
-    deployMigrations(scratch.url); // the real project migrations, as on a deployment
+    // The real project migration, as on a deployment, but stopping at 0800:
+    // this test's subject is that file, and later milestones change the
+    // catalogs compared below.
+    const upTo0800 = migrationSet({ through: CARD_EXPENSES });
+    sets.push(upTo0800);
+    deployMigrations(scratch.url, upTo0800);
 
     expect(await migrationRows(db, CARD_EXPENSES)).toEqual([{ finished: true, rolled_back: false }]);
     expect(await dataSnapshot(db)).toEqual(before);
@@ -203,7 +216,12 @@ describe("migration 20261025000800_card_expenses", () => {
     expect(withoutBody(functionsAfter)).toEqual(withoutBody(functionsBefore));
     expect(functionsAfter.filter((f, i) => f.body !== functionsBefore[i]!.body).map((f) => f.proname)).toEqual(["assert_transaction_valid"]);
 
+    // 0800 alone already accepts a card expense written directly.
     await rawCardExpense();
+
+    // The remaining migrations, so the application path can be exercised too
+    // (this working tree's finance store needs the columns they add).
+    deployMigrations(scratch.url);
     const purchase = await finance.recordTransaction(owner, {
       kind: "expense",
       amount: "1250",
@@ -567,8 +585,9 @@ describe("expenses paid by credit card (migrated scratch database)", () => {
       );
       expect(trigger.rows).toEqual([{ fn: "finora.transactions_validate", tgenabled: "O", tgdeferrable: true, tginitdeferred: true, prosecdef: true }]);
       const kinds = await db.query("SELECT unnest(enum_range(NULL::finora.transaction_kind))::text AS kind");
-      // 'card_payment' was added by 20261026000000_card_payment_kind (Milestone 5C).
-      expect(kinds.rows.map((r) => r.kind)).toEqual(["opening_balance", "income", "expense", "transfer", "card_payment"]);
+      // 'card_payment' was added by 20261026000000_card_payment_kind and
+      // 'card_refund' by 20261029000000_card_refund_kind (Milestone 5C).
+      expect(kinds.rows.map((r) => r.kind)).toEqual(["opening_balance", "income", "expense", "transfer", "card_payment", "card_refund"]);
     });
   });
 });

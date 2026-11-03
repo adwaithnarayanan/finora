@@ -212,12 +212,16 @@ enum CategoryKind {
 /// `card_payment` is a repayment of a credit card from a bank or cash
 /// account (ADR 0008, Milestone 5C): Dr the card, Cr the paying account. It
 /// debits no category and is neither income nor an expense.
+/// `card_refund` is money a merchant gives back onto a card (Milestone 5D):
+/// Dr the card, Cr the expense category, so the amount owed and the category's
+/// expense total both fall. It is a reduction of expense, never income.
 enum TransactionKind {
   opening_balance
   income
   expense
   transfer
   card_payment
+  card_refund
 
   @@map("transaction_kind")
   @@schema("finora")
@@ -318,7 +322,7 @@ model SystemLedgerAccount {
   @@schema("finora")
 }
 
-/// The business meaning of one posted journal entry (income, expense, transfer, card payment, opening balance).
+/// The business meaning of one posted journal entry (income, expense, transfer, card payment, card refund, opening balance).
 model FinanceTransaction {
   id                    String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   ownerId               String              @map("owner_id") @db.Uuid
@@ -338,6 +342,11 @@ model FinanceTransaction {
   voidedAt              DateTime?           @map("voided_at") @db.Timestamptz(6)
   /// Set on a correction: the voided transaction this one replaces.
   replacesTransactionId String?             @map("replaces_transaction_id") @db.Uuid
+  /// Set on a `card_refund` that refunds a recorded card purchase (ADR 0008,
+  /// Milestone 5D). Null for a merchant credit whose purchase Finora never
+  /// recorded. Write-once: the runtime role has no UPDATE on this column and
+  /// transactions_update_guard refuses a change.
+  refundsTransactionId  String?             @map("refunds_transaction_id") @db.Uuid
   createdAt             DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt             DateTime            @default(now()) @map("updated_at") @db.Timestamptz(6)
   owner                 Owner               @relation(fields: [ownerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
@@ -348,6 +357,9 @@ model FinanceTransaction {
   reversalEntry         JournalEntry?       @relation("TransactionReversal", fields: [reversalEntryId, ownerId], references: [id, ownerId], onDelete: Restrict, onUpdate: Restrict, map: "transactions_reversal_entry_fkey")
   replaces              FinanceTransaction? @relation("TransactionCorrection", fields: [replacesTransactionId, ownerId], references: [id, ownerId], onDelete: Restrict, onUpdate: Restrict, map: "transactions_replaces_fkey")
   replacedBy            FinanceTransaction? @relation("TransactionCorrection")
+  /// The card purchase this refund refunds; a purchase may have many refunds.
+  refunds               FinanceTransaction? @relation("TransactionRefund", fields: [refundsTransactionId, ownerId], references: [id, ownerId], onDelete: Restrict, onUpdate: Restrict, map: "transactions_refunds_fkey")
+  refundedBy            FinanceTransaction[] @relation("TransactionRefund")
 
   @@unique([id, ownerId], map: "transactions_id_owner_key")
   @@unique([journalEntryId, ownerId], map: "transactions_journal_entry_key")
@@ -357,6 +369,8 @@ model FinanceTransaction {
   @@index([sourceAccountId, ownerId, currencyCode], map: "transactions_source_idx")
   @@index([destinationAccountId, ownerId, currencyCode], map: "transactions_destination_idx")
   @@index([categoryId, ownerId], map: "transactions_category_idx")
+  /// Makes "how much of this purchase is already refunded" an index scan.
+  @@index([refundsTransactionId, ownerId], map: "transactions_refunds_idx")
   @@map("transactions")
   @@schema("finora")
 }

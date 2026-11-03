@@ -17,12 +17,20 @@ const WALLET = "33333333-3333-4333-8333-333333333333";
 const SHOPPING = "44444444-4444-4444-8444-444444444444";
 const SALARY = "55555555-5555-4555-8555-555555555555";
 const AMEX = "77777777-7777-4777-8777-777777777777";
+const BATA = "88888888-8888-4888-8888-888888888888";
+const CHEMIST = "99999999-9999-4999-8999-999999999999";
 
 const accounts = [
   { id: BANK, label: "Axis Savings (₹50,000.00)", currencyCode: "INR", exponent: 2, card: false },
   { id: CARD, label: "HDFC Card (Owed ₹12,000.00)", currencyCode: "INR", exponent: 2, card: true },
   { id: WALLET, label: "Wallet (₹0.00)", currencyCode: "INR", exponent: 2, card: false },
   { id: AMEX, label: "Amex (Nothing owed (₹0.00))", currencyCode: "INR", exponent: 2, card: true },
+];
+
+/** Refundable card purchases, as toRefundablePurchaseOptions builds them. */
+const purchases = [
+  { id: BATA, cardAccountId: CARD, categoryLabel: "Shopping", label: "24 Oct 2026 · Shopping · Bata · ₹1,250.00 (₹1,250.00 left)" },
+  { id: CHEMIST, cardAccountId: AMEX, categoryLabel: "Health", label: "20 Oct 2026 · Health · Chemist · ₹400.00 (₹150.00 left)" },
 ];
 
 /** Refuses every submission, echoing what was submitted (as the real action does). */
@@ -35,9 +43,11 @@ function refuse(field: string, message: string) {
 
 function renderForm(
   props: {
-    initialKind?: "income" | "expense" | "transfer" | "card_payment";
+    initialKind?: "income" | "expense" | "transfer" | "card_payment" | "card_refund";
     initialSourceAccountId?: string;
     initialDestinationAccountId?: string;
+    initialPurchaseId?: string;
+    purchases?: readonly { id: string; cardAccountId: string; categoryLabel: string; label: string }[];
   } = {},
 ) {
   return render(
@@ -47,9 +57,11 @@ function renderForm(
       initialKind={props.initialKind ?? "expense"}
       {...(props.initialSourceAccountId ? { initialSourceAccountId: props.initialSourceAccountId } : {})}
       {...(props.initialDestinationAccountId ? { initialDestinationAccountId: props.initialDestinationAccountId } : {})}
+      {...(props.initialPurchaseId ? { initialPurchaseId: props.initialPurchaseId } : {})}
       accounts={accounts}
       incomeCategories={[{ id: SALARY, label: "Salary" }]}
       expenseCategories={[{ id: SHOPPING, label: "Shopping" }]}
+      purchases={props.purchases ?? purchases}
     />,
   );
 }
@@ -258,5 +270,135 @@ describe("TransactionForm card payments", () => {
     expect(select("Paid from").value).toBe("");
     expect(optionLabels("Paid from")).not.toContain("HDFC Card (Owed ₹12,000.00)");
     expect(screen.getByText("The bank or cash account the money comes from.")).toBeInTheDocument();
+  });
+});
+
+/**
+ * Card refunds (ADR 0008, Milestone 5D). The form offers a refund either
+ * against a purchase Finora recorded or as an unlinked merchant credit, and
+ * never submits the fields of the mode that is not showing.
+ */
+describe("TransactionForm: card refunds", () => {
+  it("offers only credit cards, and only that card's refundable purchases", () => {
+    renderForm({ initialKind: "card_refund" });
+    expect(optionLabels("Refunded to")).toEqual([
+      "Choose an account",
+      "HDFC Card (Owed ₹12,000.00)",
+      "Amex (Nothing owed (₹0.00))",
+    ]);
+    // No card chosen yet, so no purchase can be listed.
+    expect(optionLabels("Purchase being refunded")).toEqual(["Choose a purchase"]);
+    expect(screen.getByText("Choose the card first.")).toBeInTheDocument();
+
+    fireEvent.change(select("Refunded to"), { target: { value: CARD } });
+    expect(optionLabels("Purchase being refunded")).toEqual([
+      "Choose a purchase",
+      "24 Oct 2026 · Shopping · Bata · ₹1,250.00 (₹1,250.00 left)",
+    ]);
+    // The other card's purchase is never offered for this card.
+    expect(optionLabels("Purchase being refunded")).not.toContain(
+      "20 Oct 2026 · Health · Chemist · ₹400.00 (₹150.00 left)",
+    );
+  });
+
+  it("names the category a linked refund will credit, and shows no category picker", () => {
+    renderForm({ initialKind: "card_refund", initialDestinationAccountId: CARD, initialPurchaseId: BATA });
+    expect(select("Purchase being refunded").value).toBe(BATA);
+    expect(screen.getByText("The refund credits Shopping, the category this purchase was charged to.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Category being refunded")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("The refund reduces the amount owed on this card and reduces your expenses. It is not income."),
+    ).toBeInTheDocument();
+  });
+
+  it("submits the purchase in linked mode and no category", async () => {
+    refuse("amount", "Use at most 2 decimal places for INR");
+    renderForm({ initialKind: "card_refund", initialDestinationAccountId: CARD, initialPurchaseId: BATA });
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "250.005" } });
+    fireEvent.change(screen.getByLabelText("Refunded by (optional)"), { target: { value: "Bata" } });
+
+    await submit(/Record refund/, "Use at most 2 decimal places for INR");
+    const sent = lastSubmitted();
+    expect(sent).toMatchObject({
+      kind: "card_refund",
+      destinationAccountId: CARD,
+      refundMode: "linked",
+      refundsTransactionId: BATA,
+      payee: "Bata",
+    });
+    // No stale category travels with a linked refund.
+    expect(sent["refundCategoryId"]).toBeUndefined();
+    // Everything entered survives the refusal.
+    expect(radio(/^Card refund/).checked).toBe(true);
+    expect(radio(/^A purchase recorded in Finora/).checked).toBe(true);
+    expect(select("Refunded to").value).toBe(CARD);
+    expect(select("Purchase being refunded").value).toBe(BATA);
+    expect((screen.getByLabelText("Amount") as HTMLInputElement).value).toBe("250.005");
+    expect((screen.getByLabelText("Refunded by (optional)") as HTMLInputElement).value).toBe("Bata");
+  });
+
+  it("submits a category in unlinked mode and no purchase", async () => {
+    refuse("amount", "Use at most 2 decimal places for INR");
+    renderForm({ initialKind: "card_refund", initialDestinationAccountId: CARD, initialPurchaseId: BATA });
+    fireEvent.click(radio(/^A purchase not in Finora/));
+    // The purchase select is gone, the category select is there.
+    expect(screen.queryByLabelText("Purchase being refunded")).not.toBeInTheDocument();
+    fireEvent.change(select("Category being refunded"), { target: { value: SHOPPING } });
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "99.999" } });
+
+    await submit(/Record refund/, "Use at most 2 decimal places for INR");
+    const sent = lastSubmitted();
+    expect(sent).toMatchObject({ kind: "card_refund", refundMode: "unlinked", refundCategoryId: SHOPPING });
+    // No stale purchase id travels with an unlinked refund.
+    expect(sent["refundsTransactionId"]).toBeUndefined();
+    expect(radio(/^A purchase not in Finora/).checked).toBe(true);
+    expect(select("Category being refunded").value).toBe(SHOPPING);
+  });
+
+  it("drops a purchase that the newly chosen card cannot offer", () => {
+    renderForm({ initialKind: "card_refund", initialDestinationAccountId: CARD, initialPurchaseId: BATA });
+    expect(select("Purchase being refunded").value).toBe(BATA);
+    fireEvent.change(select("Refunded to"), { target: { value: AMEX } });
+    expect(select("Purchase being refunded").value).toBe("");
+    expect(optionLabels("Purchase being refunded")).toEqual([
+      "Choose a purchase",
+      "20 Oct 2026 · Health · Chemist · ₹400.00 (₹150.00 left)",
+    ]);
+  });
+
+  it("says so when the chosen card has no purchase left to refund", () => {
+    renderForm({ initialKind: "card_refund", purchases: [] });
+    fireEvent.change(select("Refunded to"), { target: { value: CARD } });
+    expect(optionLabels("Purchase being refunded")).toEqual(["Choose a purchase"]);
+    expect(
+      screen.getByText("This card has no purchases left to refund. Record it as a purchase not in Finora instead."),
+    ).toBeInTheDocument();
+  });
+
+  it("starts in linked mode, the preferred record when the purchase is in Finora", () => {
+    renderForm({ initialKind: "card_refund" });
+    expect(radio(/^A purchase recorded in Finora/).checked).toBe(true);
+    expect(screen.getByLabelText("Purchase being refunded")).toBeInTheDocument();
+  });
+
+  it("drops the card and the purchase when switching to a kind that cannot use them", () => {
+    renderForm({ initialKind: "card_refund", initialDestinationAccountId: CARD, initialPurchaseId: BATA });
+    fireEvent.click(radio(/^Income/));
+    // A card is never a receiving account, so the selection is cleared.
+    expect(select("Received into").value).toBe("");
+    expect(screen.queryByLabelText("Purchase being refunded")).not.toBeInTheDocument();
+
+    fireEvent.click(radio(/^Card refund/));
+    expect(select("Refunded to").value).toBe("");
+    expect(select("Purchase being refunded").value).toBe("");
+  });
+
+  it("keeps a card payment's card when switching to a refund, since both use cards", () => {
+    renderForm({ initialKind: "card_payment", initialDestinationAccountId: CARD });
+    expect(select("Card to pay").value).toBe(CARD);
+    fireEvent.click(radio(/^Card refund/));
+    expect(select("Refunded to").value).toBe(CARD);
+    // There is no paying account for a refund: nothing pays it.
+    expect(screen.queryByLabelText("Paid from")).not.toBeInTheDocument();
   });
 });

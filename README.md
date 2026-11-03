@@ -95,22 +95,35 @@ see [`docs/runbooks/hosted-setup.md`](docs/runbooks/hosted-setup.md).
   and cash (a credit card's type is fixed); archive (history kept), restore,
   or delete one that has no history. A credit card can pay an expense
   (Milestone 5B: Dr the expense category, Cr the card, so the amount owed
-  grows); card payments, refunds, card income and transfers are not
-  supported yet ([ADR 0008](docs/adr/0008-credit-card-accounts.md)).
+  grows), be repaid from a bank or cash account (5C, `card_payment`: Dr the
+  card, Cr the paying account), and be credited by a refund (5D,
+  `card_refund`: Dr the card, Cr the expense category, so the amount owed and
+  that category's expenses both fall — a refund is never income). Card income
+  and transfers involving a card are still not supported
+  ([ADR 0008](docs/adr/0008-credit-card-accounts.md)).
   **Hosted Supabase has not been migrated for credit cards**
-  (`20261025000600`, `20261025000700`, `20261025000800`): they are tested on
+  (`20261025000600`, `20261025000700`, `20261025000800`, `20261026000000`,
+  `20261026000100`, `20261029000000`, `20261029000100`): they are tested on
   local scratch databases only. They need `20261025000500` and the 4D code
   deployed first, and once a card exists the application should not be
   rolled back to pre-5A code; see the hosted runbook ("Credit-card account
-  migrations" and "Card-expense migration").
+  migrations", "Card-expense migration", "Card-payment migrations" and
+  "Card-refund migrations"). The 5D migrations in particular must be applied
+  **before** the 5D code, which reads and writes the column they add on every
+  transaction, not only on refunds.
 - `/transactions/new`: record income, an expense (from a bank or cash
-  account, or on a credit card), or a transfer between bank and cash
-  accounts. The browser submits intent only; server-side templates build the
-  journal lines.
+  account, or on a credit card), a transfer between bank and cash accounts, a
+  payment towards a credit card, or a refund onto one. A refund is either
+  linked to a recorded card purchase — which fixes its category and caps it at
+  what is left of that purchase — or an unlinked merchant credit against an
+  expense category you choose. The browser submits intent only; server-side
+  templates build the journal lines.
 - `/transactions`: history with search and filters (date, type, account,
   category). Each transaction can have its payee or note edited, or be voided
-  through a ledger reversal. Opening balances are corrected from the account
-  page (reversal plus replacement).
+  through a ledger reversal. A card purchase's page also shows how much of it
+  has been refunded and what is left, and refuses to void it until its refunds
+  are voided. Opening balances are corrected from the account page (reversal
+  plus replacement).
 - `/categories`: income and expense categories; a new owner can add a
   default set with one click (pages never create categories by themselves).
 

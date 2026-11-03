@@ -81,6 +81,7 @@ describe("account balances for display", () => {
       voidedAt: null,
       replacesTransactionId: null,
       replacedByTransactionId: null,
+      refundsTransactionId: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -106,6 +107,7 @@ describe("account balances for display", () => {
       voidedAt: null,
       replacesTransactionId: null,
       replacedByTransactionId: null,
+      refundsTransactionId: null,
       createdAt: at,
       updatedAt: at,
     };

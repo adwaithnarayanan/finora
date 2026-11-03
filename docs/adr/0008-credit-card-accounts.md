@@ -11,8 +11,8 @@ lays the foundation only: card accounts, their opening amount owed, and the
 invariants that keep an account's type and its ledger account consistent.
 Purchases, repayments and refunds come in later milestones and are refused
 until then. Milestone 5B (below) adds purchases and other expenses paid by
-card, and Milestone 5C card payments (repayments); refunds are still
-refused.
+card, Milestone 5C card payments (repayments), and Milestone 5D card
+refunds.
 
 Before this change every financial account was an asset, and the
 `financial_accounts_guard` checked the ledger kind only on INSERT, while the
@@ -223,6 +223,129 @@ also the direction 5B recorded ("a transfer to a card … with its own kind").
 to a card, cash advances, balance transfers and card-to-card payments,
 paying a card in another currency (FX), statements and reconciliation,
 minimum payments, credit limits and available credit, due dates, autopay,
+interest accrual, and opening credit balances. 5D below adds refunds.
+
+### Card refunds (Milestone 5D)
+
+Money a merchant gives back onto a card is a **new transaction kind**,
+`card_refund`. It has two modes:
+
+- **Linked**: it refunds a card purchase Finora recorded. Preferred whenever
+  the purchase is there, because it is the honest record and because it is
+  what lets Finora cap the refund at what was actually paid.
+- **Unlinked**: a merchant credit for a purchase Finora never recorded. The
+  owner chooses the expense category themselves.
+
+| Transaction | Debit | Credit | Example |
+| --- | --- | --- | --- |
+| card refund | the card (liability) | the expense category | Rs 1,250 back from Bata on HDFC Card: Dr HDFC Card 1,250 / Cr Shopping 1,250 |
+
+It is the **exact mirror of a card expense**. The debit reduces the card's
+normal (credit) balance, so the amount owed falls; the credit reduces the
+expense account's normal (debit) balance, so that category's expenses for the
+period fall. **A refund is a reduction of expense, never income.**
+
+**Why not income, and why its own kind.** Recording a refund as income into
+the card was rejected twice over: income to a card is refused by 5A-5C, and it
+would inflate income for the period while leaving the original expense
+standing, so both totals would be wrong. An `expense` with a negative amount
+was impossible (`transactions_amount_positive`). Reusing `income` with an
+expense category would have broken the rule that a transaction's category kind
+equals its own kind, for every kind. A separate kind adds a rule instead of
+weakening one, lets the database pin the template precisely (a `credit_card`
+destination, no source, an expense category), and gives history and the type
+filter an honest label, exactly as 5C argued for `card_payment`.
+
+**The linked purchase.** `transactions.refunds_transaction_id` (nullable)
+points at the purchase, with a composite foreign key to `(id, owner_id)`, so a
+refund of another owner's purchase cannot be written even with the owner's own
+RLS context. It is **write-once**: the runtime role's UPDATE grant is
+column-listed (`payee`, `note`, `reversal_entry_id`) and does not include it,
+and `transactions_update_guard` now refuses a change to it. The row CHECK
+`transactions_refund_link` allows it only on a `card_refund`, and never
+pointing at the row itself.
+
+- **A linked refund takes its category from the purchase**, not from the
+  request, so the credit lands on exactly the expense account the purchase
+  debited and per-category reporting stays correct. The form therefore shows no
+  category picker in linked mode, and a submitted category is not read.
+- **Eligibility.** The target must be an `expense`, not voided, whose **source
+  account is the very card being credited**, in the same currency. That makes a
+  refund of a refund impossible (its kind is not `expense`), and with it any
+  chain or cycle: a refund may only point at an expense, and an expense may
+  never point anywhere.
+- **Partial and repeated refunds** are supported. The refunded total of a
+  purchase is `sum(amount_minor)` over its refunds with `voided_at IS NULL` --
+  derived, never stored, like every balance. `transactions_refunds_idx` keeps
+  it an index scan.
+- **Unlinked refunds are kept separate**: `refunds_transaction_id IS NULL`, so
+  they never enter any purchase's total, even on the same card and in the same
+  category.
+
+**The cumulative limit, and why it is safe under concurrency.** The active
+refunds of one purchase must never exceed its amount. A read-then-write would
+not do: two transactions each reading "60 of 100 refunded" would both pass and
+commit 120. Every check therefore takes `FOR UPDATE` **on the purchase row
+before summing its refunds**, in three places:
+
+1. the service, before it posts anything (`lockTransaction`), so the owner
+   gets a precise field error naming what is left;
+2. `transactions_insert_guard` (`BEFORE INSERT`, `SECURITY DEFINER`), which
+   also covers raw SQL written through the runtime role;
+3. `assert_transaction_valid` (deferred, at COMMIT), the standing invariant.
+
+The loser waits on that lock; because each statement in READ COMMITTED takes a
+fresh snapshot, the sum it computes once it acquires the lock includes the
+winner's committed refund, and it is refused. Both 2 and 3 are reached inside
+`SECURITY DEFINER` functions, so they see and lock true state whatever the
+caller's RLS context. An integration test proves it twice: six simultaneous
+Rs 60 refunds of a Rs 100 purchase through the service, and the same six
+written as raw SQL on six separate connections -- one is accepted, five are
+refused with the cumulative-limit error, and the derived balance agrees.
+
+- **Idempotency** is unchanged, so a replayed refund is never counted twice:
+  the ledger fingerprint covers the date, the description (which carries the
+  merchant) and both lines, and the business transaction is found by its entry.
+  Replaying a key with a different amount, date, note or payee is an
+  `IdempotencyConflictError`, and nothing is written.
+- **Void** posts the exact mirror (Cr the card / Dr the category), so the
+  amount owed and the category's expenses both come back, **and the refundable
+  amount is restored** -- the total counts only non-voided refunds, so no
+  posted line is edited to achieve it. Posted-entry immutability and the
+  one-way void are unchanged.
+- **A purchase with active refunds cannot be voided.** Otherwise its refunds
+  would refund nothing and the limit would guard an amount of zero. Refused by
+  the service with a conflict error and at COMMIT by
+  `assert_transaction_valid`; voiding the refunds first then allows it. A
+  refund that has itself been voided is allowed to point at a purchase voided
+  afterwards, so editing its note later is not refused.
+- **Overpayment semantics are unchanged.** A refund larger than what is owed
+  (or onto a card that owes nothing, which only an unlinked refund can be)
+  leaves a **credit balance in the owner's favour**, which
+  `formatAccountBalance` already renders. This is the same rule 5C settled for
+  repayments; no new one was invented.
+- **Payee.** A refund has a merchant ("Refunded by"), like an income or an
+  expense; the note is editable and the journal keeps its original text.
+- **UI.** "Card refund" is a fifth type on the transaction form, with
+  "Refunded to" listing cards only, no paying account, and a mode choice
+  between a recorded purchase and one not in Finora. Linked mode offers only
+  the chosen card's purchases that are not voided and not refunded in full,
+  each labelled with the amount left, and names the category the refund will
+  credit. Switching mode or card drops a choice the new state cannot offer, so
+  no stale purchase id or category travels with a submission; a refused
+  submission comes back on the same mode with every value intact. A card
+  purchase's page shows how much of it is refunded, the refunds themselves,
+  and a "Record a refund" link; a refund's page links back to the purchase, or
+  says it is a merchant credit. A card's page offers "Record refund" for the
+  unlinked case. In history a refund reads as money in (the debt fell), titled
+  "Refund: <category>" and badged "Card refund", so it never looks like
+  another expense in that category and never like income.
+
+**Out of scope for 5D:** chargebacks as a distinct concept, cashback and other
+income to a card, a refund that changes a purchase's category, refunding an
+expense paid from a bank or cash account, refunds in a currency other than the
+purchase's (FX), cash advances, balance transfers, card-to-card payments,
+statements and reconciliation, credit limits and available credit, due dates,
 interest accrual, and opening credit balances.
 
 ### Migrations
@@ -328,12 +451,69 @@ interest accrual, and opening credit balances.
      `20261026000000`'s enum value applied — a separate file — which is the
      documented, harmless intermediate state.
 
-In all five, no table, column, grant, policy or trigger is added or
-removed, and the `SECURITY DEFINER` set is unchanged (the catalog tests pin
-both). 0500-0800 write no enum value; 0600 and 20261026000000 each add one.
+6. `20261029000000_card_refund_kind` (Milestone 5D): only
+   `ALTER TYPE transaction_kind ADD VALUE 'card_refund'`, for the same
+   PostgreSQL reason as 0600. Unused, it changes nothing. Unlike 5C's enum
+   migration there is no window to document: `20261026000100` gave
+   `transactions_shape` an `ELSE false`, so a raw-SQL `card_refund` row
+   written between the two files is already refused by that CHECK.
+7. `20261029000100_card_refunds` (Milestone 5D):
+   - `SET lock_timeout = '5s'`, then `LOCK TABLE finora.transactions IN
+     ACCESS EXCLUSIVE MODE`, for exactly the reasons measured for
+     `20261026000100` above (Prisma 7.10.1 does not reliably wrap a migration
+     file in a transaction, and a plain `SET` is needed because `SET LOCAL` was
+     discarded before the lock was taken). The lock gives the file one
+     transaction and bounds the wait.
+   - One `ALTER TABLE` adds the nullable column `refunds_transaction_id`, its
+     composite foreign key `transactions_refunds_fkey` to `(id, owner_id)`, the
+     row CHECK `transactions_refund_link`, and the replacement
+     `transactions_shape` (a `card_refund` branch; the `ELSE false` stays).
+     ADD COLUMN of a nullable column with no default does not rewrite the
+     table, and on a brand-new all-NULL column neither the foreign key nor
+     `transactions_refund_link` can reject anything. All of it needs ACCESS
+     EXCLUSIVE, which step 0 already holds.
+   - `CREATE INDEX transactions_refunds_idx`, which is cheap on a column that
+     is NULL for every existing row.
+   - Replaces three functions with `CREATE OR REPLACE` (triggers and
+     privileges kept, `SECURITY DEFINER`/`SECURITY INVOKER` and the empty
+     `search_path` restated, `EXECUTE` revoked from PUBLIC):
+     `transactions_insert_guard` (the required category kind, and the linked
+     refund's eligibility and cumulative limit under `FOR UPDATE`),
+     `transactions_update_guard` (`refunds_transaction_id` joins the immutable
+     set) and `assert_transaction_valid` (the refund template, eligibility, the
+     cumulative limit, and the refusal to void a refunded purchase).
+   - **One rule is relaxed, not weakened:** a category's kind no longer has to
+     *equal* the transaction's kind, it has to equal the kind the transaction
+     *requires*. That is unchanged for income and expenses and is `expense` for
+     a card refund, so every existing row still satisfies it.
+   - No table, enum value, grant, policy or trigger is added or removed, and no
+     row is written. A scratch-database test compares every finora function's
+     attributes, owner, privileges and body, every trigger, every constraint on
+     `transactions` and every row of all eight tables before and after: only
+     the three function bodies and `transactions_shape` differ, the two new
+     constraints are the only ones added, all three are `convalidated`, the new
+     column is NULL on every existing row, and `finora_app` gains
+     `SELECT, INSERT` but not `UPDATE` on it.
+   - **Recovery** is as for `20261026000100`:
+     `prisma migrate resolve --rolled-back 20261029000100_card_refunds` then
+     redeploy. Re-running from the start is **not** idempotent in effect here,
+     unlike 5C: `ADD COLUMN` and `ADD CONSTRAINT` without `IF NOT EXISTS` fail
+     if a previous attempt committed them. Because the explicit `LOCK TABLE`
+     gives the file one transaction, a failure rolls the whole file back, so
+     that state should not arise; if it somehow does (for example the lock
+     statement itself was reordered or removed), an operator must drop the
+     column and the two constraints before redeploying. A failure of
+     `20261029000100` does leave `20261029000000`'s enum value applied -- a
+     separate file -- which is the documented, harmless intermediate state.
 
-**Hosted status:** these migrations (0600, 0700, 0800 and the two 5C
-migrations) have not been run against hosted Supabase. They were tested on local scratch databases only, which does not
+In all seven, no table, grant, policy or trigger is added or removed, and the
+`SECURITY DEFINER` set is unchanged (the catalog tests pin both). 0500-0800
+write no enum value; 0600, 20261026000000 and 20261029000000 each add one.
+`20261029000100` is the only one that adds a column, and the only one that
+adds constraints other than by replacing one.
+
+**Hosted status:** these migrations (0600, 0700, 0800 and the two 5C and two
+5D migrations) have not been run against hosted Supabase. They were tested on local scratch databases only, which does not
 establish hosted readiness (docs/runbooks/hosted-setup.md, "Credit-card
 account migrations").
 
@@ -353,6 +533,20 @@ needed: 0800 only relaxes a COMMIT-time check, and code already running
 card expense is refused at COMMIT and the user sees a generic "the ledger
 refused this change" error, with nothing written.
 
+For 5D: migrate (`20261029000000`, then `20261029000100`, normally one
+`migrate deploy` run), then deploy the 5D code. **A brief maintenance window
+or a quiet moment is advisable**, as for 5C and for the same reason:
+`20261029000100` takes ACCESS EXCLUSIVE on `finora.transactions` to add the
+column, the foreign key and the CHECKs, so transaction reads and writes wait
+for it (a single owner's table is small, so this is short, and
+`lock_timeout = '5s'` bounds the wait for the lock itself, failing the deploy
+in ~5s instead of queueing traffic). Code already running (4D through 5C)
+never posts a card refund, so migrating ahead of the deploy is safe. **The 5D
+code needs `20261029000100` for every transaction, not only refunds**, because
+its finance store reads and writes `refunds_transaction_id` on every
+transaction row: deployed against a 5C database it would fail to record even
+an ordinary expense, so the migration must land first.
+
 For 5C: migrate (`20261026000000`, then `20261026000100`, normally one
 `migrate deploy` run), then deploy the 5C code. **A brief maintenance window
 or a quiet moment is advisable**, unlike 5B: `20261026000100` takes ACCESS
@@ -366,7 +560,7 @@ enum value, recording a repayment fails when the row is written; with the
 enum value but not `20261026000100`, it is refused at COMMIT and the user
 sees a generic "the ledger refused this change" error, with nothing written.
 
-**Rollback:** all five migrations are forward-only. An enum value cannot be
+**Rollback:** all seven migrations are forward-only. An enum value cannot be
 dropped. Undoing 0700 would be a new, reviewed migration restoring the
 previous function bodies, valid only while no credit-card account exists.
 Undoing 0800 likewise would restore 0700's `assert_transaction_valid`, valid
@@ -396,6 +590,17 @@ voidable, since the kind and the rules remain), but 5B code does not know
 the kind — `RECORD_KIND_LABELS[kind]` is undefined for it, so history and
 the type filter would render a missing label — and it refuses new ones. This
 path has not been tested either.
+
+Rolling 5D code back to 5C code is also untested and leaves the same kind of
+gap: the column is nullable, so 5C code keeps recording ordinary transactions,
+but it does not know the `card_refund` kind (a missing label again), and it
+offers no way to void a refund, which the database now requires before its
+purchase can be voided. Undoing `20261029000100` itself would mean restoring
+5C's three function bodies and `transactions_shape` and dropping the column
+with its two constraints, valid only while no card refund exists: afterwards
+the restored CHECK has no `card_refund` branch, so with the `ELSE false` it
+would refuse every existing refund on any UPDATE of it, and the restored
+COMMIT-time check would too.
 Operators should fix forward; roll the application back only with a
 reviewed, explicit recovery plan, and never by deleting account history or
 changing a ledger account's kind.
@@ -410,11 +615,22 @@ changing a ledger account's kind.
 - Account-picker filtering and the card refusals were narrowed by 5B (cards
   pay expenses) and again by 5C (cards are paid), and would be narrowed once
   more by a refund milestone.
-- `transaction_kind` now has a fifth value, and `transactions_shape` fails
+- `transaction_kind` now has a sixth value, and `transactions_shape` fails
   closed on an unhandled one. Adding a kind therefore means: an enum
   migration, a branch in that CHECK, a branch in `assert_transaction_valid`,
-  the Prisma enum, and `RECORD_KIND_LABELS` — which is the intended cost.
-- **Deferred:** refunds, opening credit balances, credit limits and
+  a branch in `requiredCategoryKind` (and in the insert guard's mirror of it)
+  if it posts to a category, the Prisma enum, and `RECORD_KIND_LABELS` —
+  which is the intended cost.
+- `finora.transactions` now references itself twice: `replaces_transaction_id`
+  (one-to-one, a correction) and `refunds_transaction_id` (many-to-one, the
+  refunds of a purchase). Both are owner-pinned and immutable after insert.
+- Two invariants are now enforced by locking a *related* row rather than by a
+  constraint: the single active opening balance per account (5A, locking the
+  account) and the cumulative refund limit per purchase (5D, locking the
+  purchase). Anything added later that must be bounded across rows should
+  follow the same shape, because a row CHECK cannot see another row and a
+  deferred check without a lock is not safe under concurrency.
+- **Deferred:** opening credit balances, credit limits and
   available credit, statements, due dates, minimum payments and autopay,
   interest accrual (an interest charge or fee can be recorded by hand as an
   expense paid by card), cashback, cash advances, balance transfers,

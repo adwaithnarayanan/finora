@@ -8,11 +8,15 @@ import { finance } from "@/server/finance";
 import { toActionState } from "../shared/errors";
 import { type ActionState, formEntries } from "../shared/form-state";
 
+/** The form has one category select per kind; a refund's is only for an unlinked one. */
+const categoryField = (kind: string | undefined) =>
+  kind === "income" ? "incomeCategoryId" : kind === "card_refund" ? "refundCategoryId" : "expenseCategoryId";
+
 /**
- * Records an income, expense, transfer or card payment from the submitted
- * intent. The server resolves every reference under the authorised owner and
- * builds the journal lines from its own templates; no lines are accepted from
- * the form.
+ * Records an income, expense, transfer, card payment or card refund from the
+ * submitted intent. The server resolves every reference under the authorised
+ * owner and builds the journal lines from its own templates; no lines are
+ * accepted from the form.
  */
 export async function recordTransactionAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const owner = await requireOwner();
@@ -25,7 +29,9 @@ export async function recordTransactionAction(_prev: ActionState, formData: Form
       date: input["date"],
       sourceAccountId: input["sourceAccountId"],
       destinationAccountId: input["destinationAccountId"],
-      categoryId: input["kind"] === "income" ? input["incomeCategoryId"] : input["expenseCategoryId"],
+      categoryId: input[categoryField(input["kind"])],
+      refundsTransactionId: input["refundsTransactionId"],
+      refundMode: input["refundMode"],
       payee: input["payee"],
       note: input["note"],
       idempotencyKey: input["idempotencyKey"],
@@ -35,10 +41,7 @@ export async function recordTransactionAction(_prev: ActionState, formData: Form
     const state = toActionState(error);
     const fieldErrors = state.fieldErrors && {
       ...state.fieldErrors,
-      // The form has one category select per kind.
-      ...(state.fieldErrors["categoryId"]
-        ? { [input["kind"] === "income" ? "incomeCategoryId" : "expenseCategoryId"]: state.fieldErrors["categoryId"] }
-        : {}),
+      ...(state.fieldErrors["categoryId"] ? { [categoryField(input["kind"])]: state.fieldErrors["categoryId"] } : {}),
     };
     return { ...state, ...(fieldErrors ? { fieldErrors } : {}), values: input };
   }

@@ -597,6 +597,243 @@ test.describe("accounts and transactions (owner)", () => {
     await expect(balanceOn(page)).toHaveText("Credit balance ₹300.50"); // 800.50 credit − 500 spent
   });
 
+  /**
+   * Card refunds (ADR 0008, Milestone 5D). A refund reduces the amount owed
+   * and reduces expenses; it is never income. One card with one ₹1,250
+   * purchase on it, ready to be refunded.
+   */
+  async function cardWithPurchase(page: Page) {
+    await addDefaultCategories(page);
+    await createAccount(page, "Axis Savings", { opening: "50000", asOf: "2026-10-01" });
+    await page.goto("/accounts/new");
+    await page.getByLabel("Account name").fill("HDFC Card");
+    await page.getByLabel("Type").selectOption("credit_card");
+    await page.getByLabel("Amount owed today").fill("12000");
+    await page.getByLabel("As of").fill("2026-10-01");
+    await page.getByRole("button", { name: "Create account" }).click();
+    await expect(balanceOn(page)).toHaveText("Owed ₹12,000.00");
+
+    await page.getByRole("link", { name: "Record card expense" }).click();
+    await page.getByLabel("Category", { exact: true }).selectOption({ label: "Shopping" });
+    await transactionForm(page).getByLabel("Amount", { exact: true }).fill("1250");
+    await page.getByLabel("Date", { exact: true }).fill("2026-10-24");
+    await page.getByLabel("Paid to (optional)").fill("Bata");
+    await page.getByRole("button", { name: "Record expense" }).click();
+    await expect(page).toHaveURL(/\/transactions\?recorded=/);
+    await openAccount(page, "HDFC Card");
+    await expect(balanceOn(page)).toHaveText("Owed ₹13,250.00");
+  }
+
+  /** Opens the ₹1,250 Bata purchase's own page. */
+  async function openPurchase(page: Page) {
+    await page.goto("/transactions?type=expense");
+    await page.getByRole("list", { name: "Transactions" }).getByRole("listitem").filter({ hasText: "Bata" }).getByRole("link").click();
+    await expect(page.getByRole("heading", { level: 1, name: "Shopping" })).toBeVisible();
+  }
+
+  test("record a partial refund linked to a card purchase: owed falls, expenses fall, income does not rise", async ({ page }) => {
+    await cardWithPurchase(page);
+    await openPurchase(page);
+    // The purchase shows nothing refunded yet, and all of it refundable.
+    await expect(page.getByText("₹0.00 refunded of ₹1,250.00, leaving ₹1,250.00 refundable.")).toBeVisible();
+
+    await page.getByRole("link", { name: "Record a refund" }).click();
+    await expect(page).toHaveURL(/\/transactions\/new\?type=card_refund&purchase=/);
+    await expect(page.getByLabel(/^Card refund/)).toBeChecked();
+    // Linked mode, with the card and the purchase already chosen.
+    await expect(page.getByLabel(/^A purchase recorded in Finora/)).toBeChecked();
+    const refundedTo = page.getByLabel("Refunded to", { exact: true });
+    await expect(refundedTo.locator("option:checked")).toHaveText("HDFC Card (Owed ₹13,250.00)");
+    const purchaseSelect = page.getByLabel("Purchase being refunded", { exact: true });
+    await expect(purchaseSelect.locator("option:checked")).toHaveText(/24 Oct 2026 · Shopping · Bata · ₹1,250.00 \(₹1,250.00 left\)/);
+    // No category picker: a linked refund credits the purchase's own category.
+    await expect(page.getByText("The refund credits Shopping, the category this purchase was charged to.")).toBeVisible();
+    await expect(page.getByLabel("Category being refunded", { exact: true })).toHaveCount(0);
+    // Nothing pays a refund.
+    await expect(page.getByLabel("Paid from", { exact: true })).toHaveCount(0);
+
+    const form = transactionForm(page);
+    const amount = form.getByLabel("Amount", { exact: true });
+    await amount.fill("1500");
+    await page.getByLabel("Date", { exact: true }).fill("2026-10-27");
+    await page.getByLabel("Refunded by (optional)").fill("Bata");
+    await page.getByLabel("Note (optional)").fill("Returned one pair");
+
+    // More than the purchase is refused, and every entered value survives.
+    await page.getByRole("button", { name: "Record refund" }).click();
+    await expect(page.getByText("Refund at most 1250.00 INR, which is what is left of this purchase")).toBeVisible();
+    await expect(amount).toHaveValue("1500");
+    await expect(page.getByLabel(/^Card refund/)).toBeChecked();
+    await expect(page.getByLabel(/^A purchase recorded in Finora/)).toBeChecked();
+    await expect(refundedTo.locator("option:checked")).toHaveText("HDFC Card (Owed ₹13,250.00)");
+    await expect(purchaseSelect.locator("option:checked")).toHaveText(/Bata/);
+    await expect(page.getByLabel("Refunded by (optional)")).toHaveValue("Bata");
+    await expect(page.getByLabel("Note (optional)")).toHaveValue("Returned one pair");
+
+    await amount.fill("500");
+    await page.getByRole("button", { name: "Record refund" }).click();
+    await expect(page).toHaveURL(/\/transactions\?recorded=/);
+
+    // The amount owed fell by the refund, and the bank account is untouched.
+    await openAccount(page, "HDFC Card");
+    await expect(balanceOn(page)).toHaveText("Owed ₹12,750.00");
+    await openAccount(page, "Axis Savings");
+    await expect(balanceOn(page)).toHaveText("₹50,000.00");
+
+    // On the card's page it reads as money in and is labelled a refund.
+    await openAccount(page, "HDFC Card");
+    const refundRow = page.getByRole("list", { name: "Transactions" }).getByRole("listitem").filter({ hasText: "Refund: Shopping" });
+    await expect(refundRow).toContainText("27 Oct 2026");
+    await expect(refundRow).toContainText("+₹500.00");
+    await expect(refundRow).toContainText("Card refund");
+
+    // Expenses fell: the remaining expense total is the purchase alone, and
+    // the refund is not in the expense list.
+    await page.goto("/transactions?type=expense");
+    const expenses = page.getByRole("list", { name: "Transactions" }).getByRole("listitem");
+    await expect(expenses).toHaveCount(1);
+    await expect(expenses.first()).toContainText("−₹1,250.00");
+    // Income did not rise: there is no income at all.
+    await page.goto("/transactions?type=income");
+    await expect(page.getByText("No transactions match these filters.")).toBeVisible();
+    // And the refund is findable as its own type.
+    await page.goto("/transactions?type=card_refund");
+    await expect(page.getByRole("list", { name: "Transactions" }).getByRole("listitem")).toHaveCount(1);
+
+    // The purchase now shows the refund and what is left.
+    await openPurchase(page);
+    await expect(page.getByText("₹500.00 refunded of ₹1,250.00, leaving ₹750.00 refundable.")).toBeVisible();
+    await expect(page.getByRole("list", { name: "Transactions" }).getByRole("listitem").filter({ hasText: "Refund: Shopping" })).toBeVisible();
+  });
+
+  test("a linked refund names its purchase, and the purchase cannot be voided until the refund is", async ({ page }) => {
+    await cardWithPurchase(page);
+    await openPurchase(page);
+    await page.getByRole("link", { name: "Record a refund" }).click();
+    await transactionForm(page).getByLabel("Amount", { exact: true }).fill("500");
+    await page.getByRole("button", { name: "Record refund" }).click();
+    await expect(page).toHaveURL(/\/transactions\?recorded=/);
+
+    // The refund's page names the original purchase and links to it.
+    await page.goto("/transactions?type=card_refund");
+    await page.getByRole("list", { name: "Transactions" }).getByRole("listitem").first().getByRole("link").click();
+    await expect(page.getByText("Transactions / Card refund")).toBeVisible();
+    await expect(page.getByText("Refunded to", { exact: true })).toBeVisible();
+    await expect(page.getByText("Refund of", { exact: true })).toBeVisible();
+    const refundUrl = page.url();
+    await page.getByRole("link", { name: /Shopping of ₹1,250.00 on 24 Oct 2026/ }).click();
+    await expect(page.getByText("₹500.00 refunded of ₹1,250.00, leaving ₹750.00 refundable.")).toBeVisible();
+
+    // The purchase refuses to be voided while the refund stands.
+    await expect(page.getByText("This purchase has refunds recorded against it. Void those first,")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Void transaction" })).toHaveCount(0);
+
+    // Voiding the refund gives the refundable amount back and leaves it in history.
+    await page.goto(refundUrl);
+    await page.getByRole("button", { name: "Void transaction" }).click();
+    await page.getByRole("button", { name: "Yes, void it" }).click();
+    await expect(page.getByText("Voided on", { exact: false })).toBeVisible();
+    await openAccount(page, "HDFC Card");
+    await expect(balanceOn(page)).toHaveText("Owed ₹13,250.00");
+    // Still visible in history, marked void.
+    const voidedRow = page.getByRole("list", { name: "Transactions" }).getByRole("listitem").filter({ hasText: "Refund: Shopping" });
+    await expect(voidedRow).toContainText("Void");
+
+    // And now the purchase can be voided.
+    await openPurchase(page);
+    await expect(page.getByText("₹0.00 refunded of ₹1,250.00, leaving ₹1,250.00 refundable.")).toBeVisible();
+    await page.getByRole("button", { name: "Void transaction" }).click();
+    await page.getByRole("button", { name: "Yes, void it" }).click();
+    await expect(page.getByText("Voided on", { exact: false })).toBeVisible();
+    await openAccount(page, "HDFC Card");
+    await expect(balanceOn(page)).toHaveText("Owed ₹12,000.00");
+  });
+
+  test("record an unlinked refund from the card's page: a merchant credit, not income", async ({ page }) => {
+    await cardWithPurchase(page);
+    await openAccount(page, "HDFC Card");
+    await expect(page.getByText(/A refund from a merchant reduces it too/)).toBeVisible();
+
+    await page.getByRole("link", { name: "Record refund" }).click();
+    await expect(page).toHaveURL(/\/transactions\/new\?type=card_refund&account=/);
+    await expect(page.getByLabel("Refunded to", { exact: true }).locator("option:checked")).toHaveText("HDFC Card (Owed ₹13,250.00)");
+
+    // Switch to the unlinked mode: the purchase select goes, a category comes.
+    await page.getByLabel(/^A purchase not in Finora/).check();
+    await expect(page.getByLabel("Purchase being refunded", { exact: true })).toHaveCount(0);
+    const category = page.getByLabel("Category being refunded", { exact: true });
+    // Only expense categories, so a refund can never be filed as income.
+    await expect(category.locator("option", { hasText: "Salary" })).toHaveCount(0);
+    await expect(category.locator("option", { hasText: "Health" })).toHaveCount(1);
+    await category.selectOption({ label: "Health" });
+    await transactionForm(page).getByLabel("Amount", { exact: true }).fill("400");
+    await page.getByLabel("Date", { exact: true }).fill("2026-10-28");
+    await page.getByLabel("Refunded by (optional)").fill("Chemist");
+    await page.getByRole("button", { name: "Record refund" }).click();
+    await expect(page).toHaveURL(/\/transactions\?recorded=/);
+
+    // The amount owed fell, and the linked purchase's refundable amount did not move.
+    await openAccount(page, "HDFC Card");
+    await expect(balanceOn(page)).toHaveText("Owed ₹12,850.00");
+    await openPurchase(page);
+    await expect(page.getByText("₹0.00 refunded of ₹1,250.00, leaving ₹1,250.00 refundable.")).toBeVisible();
+
+    // It is a merchant credit, not income, and says so.
+    await page.goto("/transactions?type=card_refund");
+    const row = page.getByRole("list", { name: "Transactions" }).getByRole("listitem").filter({ hasText: "Refund: Health" });
+    await expect(row).toContainText("+₹400.00");
+    await row.getByRole("link").click();
+    await expect(page.getByText("A purchase that is not recorded in Finora (a merchant credit)")).toBeVisible();
+    await page.goto("/transactions?type=income");
+    await expect(page.getByText("No transactions match these filters.")).toBeVisible();
+  });
+
+  test("a fully refunded purchase is no longer offered, and existing card flows still work", async ({ page }) => {
+    await cardWithPurchase(page);
+    await openPurchase(page);
+    await page.getByRole("link", { name: "Record a refund" }).click();
+    await transactionForm(page).getByLabel("Amount", { exact: true }).fill("1250");
+    await page.getByRole("button", { name: "Record refund" }).click();
+    await expect(page).toHaveURL(/\/transactions\?recorded=/);
+
+    // Refunded in full: nothing left, and no link to record another.
+    await openPurchase(page);
+    await expect(page.getByText("₹1,250.00 refunded of ₹1,250.00, leaving ₹0.00 refundable.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Record a refund" })).toHaveCount(0);
+    // The selector no longer offers it.
+    await page.goto("/transactions/new?type=card_refund");
+    await choose(page.getByLabel("Refunded to", { exact: true }), "HDFC Card");
+    await expect(page.getByLabel("Purchase being refunded", { exact: true }).locator("option", { hasText: "Bata" })).toHaveCount(0);
+    await expect(
+      page.getByText("This card has no purchases left to refund. Record it as a purchase not in Finora instead."),
+    ).toBeVisible();
+
+    // The amount owed is back to the opening amount.
+    await openAccount(page, "HDFC Card");
+    await expect(balanceOn(page)).toHaveText("Owed ₹12,000.00");
+
+    // A card expense and a repayment still work exactly as before.
+    await page.getByRole("link", { name: "Record card expense" }).click();
+    await page.getByLabel("Category", { exact: true }).selectOption({ label: "Groceries" });
+    await transactionForm(page).getByLabel("Amount", { exact: true }).fill("300");
+    await page.getByLabel("Date", { exact: true }).fill("2026-10-29");
+    await page.getByRole("button", { name: "Record expense" }).click();
+    await expect(page).toHaveURL(/\/transactions\?recorded=/);
+    await openAccount(page, "HDFC Card");
+    await expect(balanceOn(page)).toHaveText("Owed ₹12,300.00");
+
+    await page.getByRole("link", { name: "Record repayment" }).click();
+    await choose(page.getByLabel("Paid from", { exact: true }), "Axis Savings");
+    await transactionForm(page).getByLabel("Amount", { exact: true }).fill("2000");
+    await page.getByLabel("Date", { exact: true }).fill("2026-10-29");
+    await page.getByRole("button", { name: "Record card payment" }).click();
+    await expect(page).toHaveURL(/\/transactions\?recorded=/);
+    await openAccount(page, "HDFC Card");
+    await expect(balanceOn(page)).toHaveText("Owed ₹10,300.00");
+    await openAccount(page, "Axis Savings");
+    await expect(balanceOn(page)).toHaveText("₹48,000.00");
+  });
+
   test("correct the opening balance: original reversed, replacement recorded", async ({ page }) => {
     await createSampleHistory(page);
     await openAccount(page, "HDFC Savings");

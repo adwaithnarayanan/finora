@@ -11,6 +11,7 @@ import {
   type FinancialAccountType,
   IssueCollector,
   type PostingPlan,
+  type PurchaseRef,
   type TransactionIntent,
   accountLifecycle,
   isTwoSided,
@@ -22,12 +23,16 @@ import {
   parseName,
   parseNote,
   parsePayee,
+  checkRefundAmount,
+  checkRefundablePurchase,
   parseTransactionIntent,
   planOpeningBalance,
   planTransaction,
+  remainingRefundable,
+  requiredCategoryKind,
 } from "@/domain/finance";
 import { type LedgerDate, parseIdempotencyKey, parseLedgerDate } from "@/domain/ledger";
-import type { Money } from "@/domain/money";
+import { Money } from "@/domain/money";
 import { isCanonicalUuid } from "@/domain/shared/uuid";
 import type { AuthorizedOwner } from "@/server/auth/types";
 import { IdempotencyConflictError } from "@/server/ledger/errors";
@@ -61,6 +66,20 @@ export interface AccountSummary {
 
 export interface AccountDetail extends AccountSummary {
   readonly openingBalance: TransactionRecord | null;
+}
+
+/** A card purchase and how much of it may still be refunded (ADR 0008). */
+export interface RefundablePurchase {
+  readonly purchase: TransactionRecord;
+  /** Total of the purchase's still-active refunds. */
+  readonly refunded: Money;
+  /** Its amount less `refunded`, never below zero. */
+  readonly remaining: Money;
+}
+
+export interface PurchaseRefunds extends RefundablePurchase {
+  /** Every refund of the purchase, voided ones included, oldest first. */
+  readonly refunds: readonly TransactionRecord[];
 }
 
 export interface Replayable<T> {
@@ -106,6 +125,18 @@ function toAccountRef(account: FinancialAccountRecord): AccountRef {
 
 function toCategoryRef(category: CategoryRecord): CategoryRef {
   return { id: category.id, name: category.name, kind: category.kind, archived: category.archivedAt !== null };
+}
+
+/** The purchase a refund is linked to, as the refund rules see it. */
+function toPurchaseRef(purchase: TransactionRecord): PurchaseRef {
+  return {
+    id: purchase.id,
+    kind: purchase.kind,
+    // For a card purchase this is the card that paid.
+    paidByAccountId: purchase.sourceAccountId,
+    amount: purchase.amount,
+    voided: purchase.voidedAt !== null,
+  };
 }
 
 /** The ledger account a category posts to in `currencyCode`, created on first use. */
@@ -247,6 +278,7 @@ export function createFinanceService(run: FinanceRunner) {
       payee: null,
       note: null,
       replacesTransactionId: null,
+      refundsTransactionId: null,
     });
   }
 
@@ -462,6 +494,7 @@ export function createFinanceService(run: FinanceRunner) {
           note: null,
           journalEntryId: replacement.id,
           replacesTransactionId: current.id,
+          refundsTransactionId: null,
         });
         return { value, replayed: false };
       });
@@ -524,12 +557,14 @@ export function createFinanceService(run: FinanceRunner) {
     // --- Transactions -----------------------------------------------------------
 
     /**
-     * Records an income, expense, transfer or card payment: validate, resolve
-     * references under the owner, check state and currency, post the entry
-     * from the template, record the transaction, all in one transaction.
-     * Retrying with the same key returns the first result without a second
-     * effect. A card payment debits the card (reducing the amount owed) and
-     * credits the paying bank or cash account; it is not an expense.
+     * Records an income, expense, transfer, card payment or card refund:
+     * validate, resolve references under the owner, check state and currency,
+     * post the entry from the template, record the transaction, all in one
+     * transaction. Retrying with the same key returns the first result
+     * without a second effect. A card payment debits the card (reducing the
+     * amount owed) and credits the paying bank or cash account; it is not an
+     * expense. A card refund debits the card and credits an expense category,
+     * so it reduces expenses and is never income.
      */
     async recordTransaction(
       owner: AuthorizedOwner,
@@ -541,10 +576,44 @@ export function createFinanceService(run: FinanceRunner) {
         const { finance } = stores;
         const source = "sourceAccountId" in intent ? await finance.findAccount(intent.sourceAccountId) : null;
         const destination = "destinationAccountId" in intent ? await finance.findAccount(intent.destinationAccountId) : null;
-        const category = "categoryId" in intent ? await finance.findCategory(intent.categoryId) : null;
         const account = intent.kind === "expense" ? source : destination;
+
+        /**
+         * A linked card refund takes its category from the purchase, so the
+         * credit lands on exactly the expense account the purchase debited.
+         * The purchase row is LOCKED here, before its refunds are summed
+         * below: that lock is what stops two concurrent refunds from both
+         * fitting inside the same remaining amount. The database takes the
+         * same lock and re-checks the total at COMMIT, so raw SQL through the
+         * runtime role cannot get past it either (ADR 0008).
+         */
+        const linked = intent.kind === "card_refund" ? intent.refundsTransactionId : null;
+        const purchase = linked === null ? null : await mustFindTransaction(finance, linked, true);
+        /**
+         * A key that was used before is a replay or a conflict, and either way
+         * the refund rules were applied when the refund was first recorded.
+         * They must NOT run again: the refund's own amount is part of the
+         * total by now, so re-checking would refuse the replay of a refund
+         * that finished off its purchase. postAndRecord resolves it instead,
+         * returning the original or raising the conflict.
+         */
+        const replaying = purchase !== null && (await stores.ledger.findByIdempotencyKey(parseIdempotencyKey(key))) !== null;
+        // Whether the purchase can be refunded at all is settled first: it
+        // cannot be fixed by a different amount, and a card payment (which has
+        // no category) must not come back as "that category does not exist".
+        const refunded =
+          purchase && !replaying ? Money.ofMinor(await finance.refundedMinor(purchase.id), purchase.amount.currency) : null;
+        if (purchase && refunded && destination) {
+          const issues = new IssueCollector();
+          checkRefundablePurchase(issues, { purchase: toPurchaseRef(purchase), card: toAccountRef(destination), refunded });
+          issues.throwIfAny();
+        }
+        const categoryId = purchase ? purchase.categoryId : "categoryId" in intent ? intent.categoryId : null;
+
+        const category = categoryId === null ? null : await finance.findCategory(categoryId);
+        const neededKind = requiredCategoryKind(intent.kind);
         const categoryLedgerAccountId =
-          category && account && category.kind === intent.kind && category.archivedAt === null
+          category && account && category.kind === neededKind && category.archivedAt === null
             ? await categoryLedgerAccount(stores, category, account.currency.code)
             : undefined;
         const plan = planTransaction(intent, {
@@ -553,6 +622,15 @@ export function createFinanceService(run: FinanceRunner) {
           ...(category ? { category: toCategoryRef(category) } : {}),
           ...(categoryLedgerAccountId ? { categoryLedgerAccountId } : {}),
         });
+
+        if (purchase && refunded) {
+          // Now that the amount is parsed in the card's currency, the only
+          // rule left is the cumulative limit.
+          const issues = new IssueCollector();
+          checkRefundAmount(issues, { purchase: toPurchaseRef(purchase), amount: plan.amount, refunded });
+          issues.throwIfAny();
+        }
+
         return postAndRecord(stores, plan, key, {
           sourceAccountId: source?.id ?? null,
           destinationAccountId: destination?.id ?? null,
@@ -560,6 +638,7 @@ export function createFinanceService(run: FinanceRunner) {
           payee: "payee" in intent ? intent.payee : null,
           note: intent.note,
           replacesTransactionId: null,
+          refundsTransactionId: purchase?.id ?? null,
         });
       });
     },
@@ -589,6 +668,13 @@ export function createFinanceService(run: FinanceRunner) {
           throw new FinanceConflictError("already-voided");
         }
         if (transaction.replacedByTransactionId) throw new FinanceConflictError("already-voided");
+        // The refunds of a purchase would refund nothing once it is void, so
+        // they come first. Voiding a refund is never blocked: it gives the
+        // purchase its refundable amount back. The database refuses this at
+        // COMMIT as well.
+        if (transaction.kind === "expense" && (await stores.finance.refundedMinor(transaction.id)) > 0n) {
+          throw new FinanceConflictError("purchase-has-refunds");
+        }
         const { entry } = await ledgerOperations.reverseEntry(stores.ledger, transaction.journalEntryId, {
           entryDate: date,
           description: `Void: ${transaction.kind.replace("_", " ")}`,
@@ -626,6 +712,44 @@ export function createFinanceService(run: FinanceRunner) {
       return inTransaction(owner, ({ finance }) =>
         finance.listTransactions({ includeVoided: true, limit: 200, ...filters }),
       );
+    },
+
+    /**
+     * The card purchases a refund may be linked to: active expenses paid by
+     * an active card that are not refunded in full yet, newest first. Used to
+     * build the linked-refund selector, so it offers nothing the service
+     * would refuse.
+     */
+    async listRefundablePurchases(owner: AuthorizedOwner): Promise<RefundablePurchase[]> {
+      return inTransaction(owner, async ({ finance }) => {
+        const rows = await finance.listRefundablePurchases();
+        return rows
+          .map(({ purchase, refundedMinor }) => {
+            const refunded = Money.ofMinor(refundedMinor, purchase.amount.currency);
+            return { purchase, refunded, remaining: remainingRefundable(purchase.amount, refunded) };
+          })
+          .filter(({ remaining }) => !remaining.isZero());
+      });
+    },
+
+    /**
+     * The refund history and totals of a card purchase, or null when `id` is
+     * not an expense paid by a credit card (so a page can simply ask).
+     */
+    async getPurchaseRefunds(owner: AuthorizedOwner, id: string): Promise<PurchaseRefunds | null> {
+      return inTransaction(owner, async ({ finance }) => {
+        const purchase = await mustFindTransaction(finance, id);
+        if (purchase.kind !== "expense" || purchase.sourceAccountId === null) return null;
+        const paidBy = await finance.findAccount(purchase.sourceAccountId);
+        if (!paidBy || ACCOUNT_LEDGER_KIND[paidBy.type] !== "liability") return null;
+        const refunded = Money.ofMinor(await finance.refundedMinor(purchase.id), purchase.amount.currency);
+        return {
+          purchase,
+          refunded,
+          remaining: remainingRefundable(purchase.amount, refunded),
+          refunds: await finance.listRefunds(purchase.id),
+        };
+      });
     },
   };
 }

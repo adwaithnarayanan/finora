@@ -12,10 +12,14 @@ import {
   DEFAULT_CATEGORIES,
   FinanceValidationError,
   IssueCollector,
+  type PurchaseRef,
   RECORD_KIND_LABELS,
   TRANSACTION_KINDS,
   TWO_SIDED_KINDS,
   accountLifecycle,
+  checkLinkedRefund,
+  checkRefundablePurchase,
+  isRefundablePurchase,
   isTwoSided,
   parseAccountType,
   parseAccountTypeChange,
@@ -26,7 +30,10 @@ import {
   parseTransactionIntent,
   planOpeningBalance,
   planTransaction,
+  remainingRefundable,
+  requiredCategoryKind,
 } from "./index";
+import { Money } from "@/domain/money";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const account = (n: number, extra: Partial<AccountRef> = {}): AccountRef => ({
@@ -302,7 +309,7 @@ describe("posting templates", () => {
     } catch (error) {
       if (!(error instanceof FinanceValidationError)) throw error;
       expect(error.issues).toEqual([
-        { field: "destinationAccountId", message: expect.stringMatching(/is not a credit card; choose the card you are paying/) },
+        { field: "destinationAccountId", message: expect.stringMatching(/is not a credit card; choose a credit card/) },
       ]);
     }
   });
@@ -314,7 +321,7 @@ describe("posting templates", () => {
     } catch (error) {
       if (!(error instanceof FinanceValidationError)) throw error;
       expect(error.issues).toEqual([
-        { field: "sourceAccountId", message: expect.stringMatching(/is a credit card; a card can only pay for an expense or be paid/) },
+        { field: "sourceAccountId", message: expect.stringMatching(/is a credit card; a card can only pay for an expense, be paid by a card payment or be credited by a card refund/) },
       ]);
     }
   });
@@ -467,5 +474,233 @@ describe("field parsers", () => {
     });
     expect(() => issues.throwIfAny()).toThrow(FinanceValidationError);
     expect(parseLedgerDate(date)).toBe(date);
+  });
+});
+
+/**
+ * Card refunds (ADR 0008, Milestone 5D). A refund debits the card and credits
+ * the expense category, which is the exact mirror of a card expense: the
+ * amount owed falls and the category's expenses fall with it. It is never
+ * income, and never an income category.
+ */
+describe("card refunds", () => {
+  const inr = (text: string) => Money.parse(text, INR);
+  const refund = (extra: Record<string, unknown> = {}) =>
+    parseTransactionIntent({
+      kind: "card_refund",
+      amount: "500",
+      date,
+      destinationAccountId: id(2),
+      refundMode: "unlinked",
+      categoryId: id(201),
+      ...extra,
+    });
+  const linked = (extra: Record<string, unknown> = {}) =>
+    parseTransactionIntent({
+      kind: "card_refund",
+      amount: "500",
+      date,
+      destinationAccountId: id(2),
+      refundMode: "linked",
+      refundsTransactionId: id(500),
+      ...extra,
+    });
+  const purchase = (extra: Partial<PurchaseRef> = {}): PurchaseRef => ({
+    id: id(500),
+    kind: "expense",
+    paidByAccountId: id(2),
+    amount: inr("1250"),
+    voided: false,
+    ...extra,
+  });
+  const expenseCategory = { category: category("expense"), categoryLedgerAccountId: id(301) };
+
+  it("is an offered kind, labelled as a refund, and is not two-sided", () => {
+    expect(TRANSACTION_KINDS).toContain("card_refund");
+    expect(RECORD_KIND_LABELS.card_refund).toBe("Card refund");
+    // It touches one account (the card) and one category, like income.
+    expect(isTwoSided("card_refund")).toBe(false);
+    expect(TWO_SIDED_KINDS).not.toContain("card_refund");
+  });
+
+  it("posts to an expense category, never an income one", () => {
+    expect(requiredCategoryKind("card_refund")).toBe("expense");
+    expect(requiredCategoryKind("expense")).toBe("expense");
+    expect(requiredCategoryKind("income")).toBe("income");
+    expect(requiredCategoryKind("transfer")).toBeNull();
+    expect(requiredCategoryKind("card_payment")).toBeNull();
+    expect(requiredCategoryKind("opening_balance")).toBeNull();
+  });
+
+  it("debits the card and credits the expense category (the mirror of a card expense)", () => {
+    const plan = planTransaction(refund({ note: "Returned the shoes" }), { destination: card(2), ...expenseCategory });
+    expect(plan.kind).toBe("card_refund");
+    expect(plan.description).toBe("Card refund");
+    expect(plan.lines).toEqual([
+      // Dr the card: the amount owed falls.
+      { accountId: id(102), side: "debit", amount: "500.00", currency: "INR", memo: "Returned the shoes" },
+      // Cr the expense category: expenses for the period fall.
+      { accountId: id(301), side: "credit", amount: "500.00", currency: "INR", memo: null },
+    ]);
+  });
+
+  it("is the exact mirror of the card expense it gives back", () => {
+    const spend = parseTransactionIntent({ kind: "expense", amount: "500", date, sourceAccountId: id(2), categoryId: id(201) });
+    const expense = planTransaction(spend, { source: card(2), ...expenseCategory });
+    const back = planTransaction(refund(), { destination: card(2), ...expenseCategory });
+    // Same two accounts and amount, opposite sides.
+    expect(back.lines.map((l) => [l.accountId, l.side])).toEqual(
+      expense.lines.map((l) => [l.accountId, l.side === "debit" ? "credit" : "debit"]).reverse(),
+    );
+  });
+
+  it("carries the merchant as the payee in the entry description", () => {
+    expect(planTransaction(refund({ payee: "Bata" }), { destination: card(2), ...expenseCategory }).description).toBe(
+      "Card refund from Bata",
+    );
+  });
+
+  it("refuses an income category, so a refund can never be filed as income", () => {
+    expect(
+      issuesOf(() =>
+        planTransaction(refund({ categoryId: id(200) }), {
+          destination: card(2),
+          category: category("income"),
+          categoryLedgerAccountId: id(300),
+        }),
+      ),
+    ).toEqual(["categoryId"]);
+  });
+
+  it.each([
+    ["a bank or cash account instead of a card", () => planTransaction(refund(), { destination: account(2), ...expenseCategory }), ["destinationAccountId"]],
+    ["a missing card", () => planTransaction(refund(), expenseCategory), ["destinationAccountId"]],
+    ["an archived card", () => planTransaction(refund(), { destination: card(2, { archived: true }), ...expenseCategory }), ["destinationAccountId"]],
+    ["a missing category", () => planTransaction(refund(), { destination: card(2) }), ["categoryId"]],
+    [
+      "an archived category",
+      () => planTransaction(refund(), { destination: card(2), category: category("expense", { archived: true }), categoryLedgerAccountId: id(301) }),
+      ["categoryId"],
+    ],
+  ])("refuses a refund with %s", (_label, fn, fields) => {
+    expect(issuesOf(fn)).toEqual(fields);
+  });
+
+  it("checks the amount's precision against the card's currency", () => {
+    const tooPrecise = refund({ amount: "1.001" });
+    expect(issuesOf(() => planTransaction(tooPrecise, { destination: card(2), ...expenseCategory }))).toEqual(["amount"]);
+    const kwd = refund({ amount: "1.234" });
+    expect(
+      planTransaction(kwd, { destination: card(2, { currency: KNOWN_CURRENCIES.KWD }), ...expenseCategory }).amount.minor,
+    ).toBe(1234n);
+  });
+
+  it("takes a linked refund's category from the purchase, so none is submitted", () => {
+    const intent = linked({ categoryId: id(200) });
+    expect(intent).toMatchObject({ kind: "card_refund", refundsTransactionId: id(500), categoryId: null });
+  });
+
+  it("asks for a purchase in linked mode and a category in unlinked mode", () => {
+    // Linked mode without a purchase is reported on the purchase field, not
+    // as a missing category the form is not showing.
+    expect(issuesOf(() => linked({ refundsTransactionId: "" }))).toEqual(["refundsTransactionId"]);
+    expect(issuesOf(() => refund({ categoryId: "" }))).toEqual(["categoryId"]);
+    // Without an explicit mode, the presence of a link decides.
+    expect(
+      parseTransactionIntent({ kind: "card_refund", amount: "500", date, destinationAccountId: id(2), refundsTransactionId: id(500) }),
+    ).toMatchObject({ refundsTransactionId: id(500), categoryId: null });
+  });
+
+  describe("the remaining refundable amount", () => {
+    it("is the purchase less its active refunds, and never negative", () => {
+      expect(remainingRefundable(inr("1250"), inr("0")).toDecimalString()).toBe("1250.00");
+      expect(remainingRefundable(inr("1250"), inr("250")).toDecimalString()).toBe("1000.00");
+      expect(remainingRefundable(inr("1250"), inr("1250")).toDecimalString()).toBe("0.00");
+      // Clamped: more refunds than the purchase reads as nothing left.
+      expect(remainingRefundable(inr("1250"), inr("2000")).toDecimalString()).toBe("0.00");
+    });
+
+    it("is exact in minor units at every scale", () => {
+      const big = Money.ofMinor(9_007_199_254_740_993n, INR); // beyond Number.MAX_SAFE_INTEGER
+      expect(remainingRefundable(big, Money.ofMinor(1n, INR)).minor).toBe(9_007_199_254_740_992n);
+    });
+  });
+
+  describe("eligibility of the linked purchase", () => {
+    it("accepts an active expense paid by this very card, in its currency", () => {
+      expect(isRefundablePurchase(purchase(), card(2))).toBe(true);
+    });
+
+    it.each([
+      ["a voided purchase", purchase({ voided: true })],
+      ["another card's purchase", purchase({ paidByAccountId: id(3) })],
+      ["a purchase paid from a bank account", purchase({ paidByAccountId: id(1) })],
+      ["a refund (so no chain or cycle of refunds)", purchase({ kind: "card_refund" })],
+      ["a card payment", purchase({ kind: "card_payment" })],
+      ["an opening balance", purchase({ kind: "opening_balance" })],
+      ["a purchase in another currency", purchase({ amount: Money.parse("1250", KNOWN_CURRENCIES.USD) })],
+    ])("refuses %s", (_label, p) => {
+      expect(isRefundablePurchase(p, card(2))).toBe(false);
+    });
+  });
+
+  describe("the cumulative limit on a purchase", () => {
+    const check = (amount: string, refunded: string, p: PurchaseRef = purchase()) => {
+      const issues = new IssueCollector();
+      checkLinkedRefund(issues, { purchase: p, card: card(2), amount: inr(amount), refunded: inr(refunded) });
+      return issuesOf(() => issues.throwIfAny());
+    };
+    const ok = (amount: string, refunded: string, p: PurchaseRef = purchase()) => {
+      const issues = new IssueCollector();
+      checkLinkedRefund(issues, { purchase: p, card: card(2), amount: inr(amount), refunded: inr(refunded) });
+      issues.throwIfAny();
+    };
+
+    it("allows a partial refund, and a second one that exactly finishes the purchase", () => {
+      expect(() => ok("250", "0")).not.toThrow();
+      expect(() => ok("1000", "250")).not.toThrow();
+      // To the last minor unit.
+      expect(() => ok("1250", "0")).not.toThrow();
+      expect(() => ok("0.01", "1249.99")).not.toThrow();
+    });
+
+    it("refuses a refund that would take the total past what was paid", () => {
+      expect(check("1251", "0")).toEqual(["amount"]);
+      expect(check("1000.01", "250")).toEqual(["amount"]);
+      // One minor unit too many.
+      expect(check("0.02", "1249.99")).toEqual(["amount"]);
+    });
+
+    it("names what is left, in the purchase's currency", () => {
+      const issues = new IssueCollector();
+      checkLinkedRefund(issues, { purchase: purchase(), card: card(2), amount: inr("1000"), refunded: inr("500") });
+      try {
+        issues.throwIfAny();
+        throw new Error("expected FinanceValidationError");
+      } catch (error) {
+        if (!(error instanceof FinanceValidationError)) throw error;
+        expect(error.issues[0]).toEqual({ field: "amount", message: "Refund at most 750.00 INR, which is what is left of this purchase" });
+      }
+    });
+
+    it("refuses any refund of a purchase already refunded in full, against the link", () => {
+      expect(check("0.01", "1250")).toEqual(["refundsTransactionId"]);
+    });
+
+    it("reports an ineligible purchase against the link, not the amount", () => {
+      expect(check("100", "0", purchase({ voided: true }))).toEqual(["refundsTransactionId"]);
+      expect(check("100", "0", purchase({ kind: "card_refund" }))).toEqual(["refundsTransactionId"]);
+    });
+
+    it("says nothing when the account is not a usable card: that is the account's problem", () => {
+      // planTransaction reports the account against its own field, so the
+      // purchase checks stay silent rather than blaming the purchase.
+      for (const notACard of [account(2), card(2, { archived: true })]) {
+        const issues = new IssueCollector();
+        const possible = checkRefundablePurchase(issues, { purchase: purchase(), card: notACard, refunded: inr("0") });
+        expect(possible).toBe(false);
+        expect(() => issues.throwIfAny()).not.toThrow();
+      }
+    });
   });
 });

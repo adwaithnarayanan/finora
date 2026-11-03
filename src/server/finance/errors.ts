@@ -16,7 +16,8 @@ export type FinanceConflictReason =
   | "account-has-history"
   | "opening-balance-exists"
   | "no-opening-balance"
-  | "already-voided";
+  | "already-voided"
+  | "purchase-has-refunds";
 
 const MESSAGES: Record<FinanceConflictReason, string> = {
   "account-name-taken": "You already have an account with that name",
@@ -25,6 +26,7 @@ const MESSAGES: Record<FinanceConflictReason, string> = {
   "opening-balance-exists": "This account already has an opening balance; correct it instead",
   "no-opening-balance": "This account has no opening balance to correct",
   "already-voided": "This transaction has already been voided or corrected",
+  "purchase-has-refunds": "This purchase has refunds recorded against it; void those first",
 };
 
 /** The request conflicts with the current state; nothing was changed. */

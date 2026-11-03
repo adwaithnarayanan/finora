@@ -11,7 +11,8 @@ import { preflightHintQuery } from "../support/migration-hint";
 
 import { runCleanup } from "./support/cleanup";
 import { seedOwner } from "./support/db";
-import { authorize, financeFor } from "./support/ledger";
+import { authorize, financeFor, ledgerFor } from "./support/ledger";
+import { historyOn } from "./support/pre-migration";
 import {
   type MigrationSet,
   type ScratchDatabase,
@@ -123,17 +124,31 @@ describe("migration on existing data", () => {
     const categories = await finance.listCategories(owner);
     const salary = categories.find((c) => c.name === "Salary")!;
     const groceries = categories.find((c) => c.name === "Groceries")!;
-    const bank = (await finance.createAccount(owner, { name: "Axis", type: "bank", openingBalance: { amount: "50000", date: today }, idempotencyKey: randomUUID() })).value;
+    // The accounts go through the service, but the transactions cannot: the
+    // finance store reads and writes columns that later migrations add (see
+    // historyOn). Opening balances, a correction, income, a voided expense
+    // and a transfer, which is the shape 0700 re-checks every row against.
+    const bank = (await finance.createAccount(owner, { name: "Axis", type: "bank", idempotencyKey: randomUUID() })).value;
     const cash = (await finance.createAccount(owner, { name: "Wallet", type: "cash", idempotencyKey: randomUUID() })).value;
-    await finance.setOpeningBalance(owner, cash.id, { amount: "500", date: today, idempotencyKey: randomUUID() });
-    await finance.correctOpeningBalance(owner, cash.id, { amount: "600", date: today, idempotencyKey: randomUUID() });
-    await finance.recordTransaction(owner, { kind: "income", amount: "1000", date: today, destinationAccountId: bank.id, categoryId: salary.id, idempotencyKey: randomUUID() });
-    const spent = await finance.recordTransaction(owner, { kind: "expense", amount: "250", date: today, sourceAccountId: bank.id, categoryId: groceries.id, idempotencyKey: randomUUID() });
-    await finance.voidTransaction(owner, spent.value.id, { date: today, idempotencyKey: randomUUID() });
-    await finance.recordTransaction(owner, { kind: "transfer", amount: "100", date: today, sourceAccountId: bank.id, destinationAccountId: cash.id, idempotencyKey: randomUUID() });
+    const history = historyOn({ db, ledger: ledgerFor(prisma), owner, ownerId: seeded.ownerId, date: today });
+    const equity = await history.openingEquity();
+    const salaryLedger = await history.mapCategory(salary.id, "income");
+    const groceriesLedger = await history.mapCategory(groceries.id, "expense");
+    await history.record({ kind: "opening_balance", amount: "50000", debit: bank.ledgerAccountId, credit: equity, destination: bank.id });
+    const cashOpening = await history.record({ kind: "opening_balance", amount: "500", debit: cash.ledgerAccountId, credit: equity, destination: cash.id });
+    await history.correct(cashOpening, { kind: "opening_balance", amount: "600", debit: cash.ledgerAccountId, credit: equity, destination: cash.id });
+    await history.record({ kind: "income", amount: "1000", debit: bank.ledgerAccountId, credit: salaryLedger, destination: bank.id, category: salary.id });
+    const spent = await history.record({ kind: "expense", amount: "250", debit: groceriesLedger, credit: bank.ledgerAccountId, source: bank.id, category: groceries.id });
+    await history.void(spent);
+    await history.record({ kind: "transfer", amount: "100", debit: cash.ledgerAccountId, credit: bank.ledgerAccountId, source: bank.id, destination: cash.id });
     const before = await dataSnapshot(db);
 
-    deployMigrations(scratch.url); // the real project migrations, as on a deployment
+    // The real project migrations, as on a deployment, but stopping at 0700:
+    // this test's subject is 0600 and 0700, and later milestones change the
+    // rows and catalogs compared below.
+    const upTo0700 = migrationSet({ through: CLASS });
+    sets.push(upTo0700);
+    deployMigrations(scratch.url, upTo0700);
 
     expect(await dataSnapshot(db)).toEqual(before);
     expect(await migrationRows(db, ENUM)).toEqual([{ finished: true, rolled_back: false }]);
@@ -143,6 +158,9 @@ describe("migration on existing data", () => {
       ["financial_account_ledger_kind", false],
       ["financial_accounts_guard", true],
     ]);
+    // The remaining migrations, so the application path can be exercised too
+    // (this working tree's finance store needs the columns they add).
+    deployMigrations(scratch.url);
     expect(await finance.getAccount(owner, bank.id).then((d) => d.balance.toDecimalString())).toBe("50900.00");
 
     const card = (await finance.createAccount(owner, { name: "HDFC Card", type: "credit_card", openingBalance: { amount: "12000", date: today }, idempotencyKey: randomUUID() })).value;

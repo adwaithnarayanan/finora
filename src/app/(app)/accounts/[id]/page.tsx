@@ -82,18 +82,28 @@ async function AccountDetail({ params }: Pick<PageProps<"/accounts/[id]">, "para
               {card ? "Record card expense" : "Record transaction"}
             </Link>
             {card ? (
-              <Link
-                href={`/transactions/new?type=card_payment&account=${view.id}`}
-                className={buttonVariants({ size: "sm", variant: "outline" })}
-              >
-                Record repayment
-              </Link>
+              <>
+                <Link
+                  href={`/transactions/new?type=card_payment&account=${view.id}`}
+                  className={buttonVariants({ size: "sm", variant: "outline" })}
+                >
+                  Record repayment
+                </Link>
+                <Link
+                  href={`/transactions/new?type=card_refund&account=${view.id}`}
+                  className={buttonVariants({ size: "sm", variant: "outline" })}
+                >
+                  Record refund
+                </Link>
+              </>
             ) : null}
           </div>
           {card ? (
             <p className="text-sm text-muted-foreground">
               Expenses paid with this card add to the amount owed. A repayment from a bank or cash account reduces it and is
-              not an expense. Refunds cannot be recorded yet.
+              not an expense. A refund from a merchant reduces it too, and reduces your expenses rather than counting as
+              income &mdash; start one from the purchase&apos;s own page to link it, or record it here if the purchase was
+              never entered.
             </p>
           ) : null}
         </div>

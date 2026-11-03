@@ -440,7 +440,8 @@ describe("account classes (ADR 0008): type and ledger kind agree", () => {
     ).rejects.toThrow(/the journal entry does not match the transaction/);
     await asOwner(app, a.ownerId, async () => insertCardExpense(await postedEntry(expenseLedger, cardLedgerId, 125000)));
 
-    const unsupported = /a credit card can only pay an expense or be paid by a card payment; income and transfers use bank and cash accounts only/;
+    const unsupported =
+      /a credit card can only pay an expense, be paid by a card payment or be credited by a card refund; income and transfers use bank and cash accounts only/;
     await expect(
       asOwner(app, a.ownerId, async () => {
         const entry = await postedEntry(cardLedgerId, incomeLedger, 500);

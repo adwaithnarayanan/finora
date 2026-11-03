@@ -5,7 +5,14 @@ import { withFinanceStores } from "@/server/db";
 import { createFinanceService } from "./service";
 
 export { FinanceConflictError, FinanceNotFoundError } from "./errors";
-export type { AccountDetail, AccountSummary, FinanceService, Replayable } from "./service";
+export type {
+  AccountDetail,
+  AccountSummary,
+  FinanceService,
+  PurchaseRefunds,
+  RefundablePurchase,
+  Replayable,
+} from "./service";
 export type { CategoryRecord, FinancialAccountRecord, TransactionFilters, TransactionRecord } from "./store";
 
 /**
