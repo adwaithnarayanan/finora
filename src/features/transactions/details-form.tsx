@@ -1,13 +1,11 @@
 "use client";
 
-import { useActionState } from "react";
-
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
 import { Field, FormError } from "../shared/field";
-import { type ActionState, INITIAL_STATE } from "../shared/form-state";
+import { useFormAction } from "../shared/use-form-action";
 import { updateTransactionDetailsAction } from "./actions";
 
 /** Edits metadata only (payee, note); amounts, dates and accounts are fixed once posted. */
@@ -22,9 +20,7 @@ export function TransactionDetailsForm({
   note: string | null;
   allowPayee: boolean;
 }) {
-  const [state, action, pending] = useActionState<ActionState, FormData>(updateTransactionDetailsAction, INITIAL_STATE);
-  const values = state.values ?? {};
-  const errors = state.fieldErrors ?? {};
+  const { state, action, pending, errors, values } = useFormAction(updateTransactionDetailsAction);
   return (
     <form action={action} className="grid gap-4" noValidate>
       <input type="hidden" name="transactionId" value={transactionId} />
@@ -38,9 +34,7 @@ export function TransactionDetailsForm({
       </Field>
       <FormError state={state} />
       <div>
-        <Button type="submit" variant="outline" disabled={pending}>
-          {pending ? "Saving…" : "Save details"}
-        </Button>
+        <Button type="submit" loading={pending} loadingText="Saving…" variant="outline">Save details</Button>
       </div>
     </form>
   );

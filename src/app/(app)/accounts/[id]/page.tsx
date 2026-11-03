@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
+import { Callout } from "@/components/callout";
+import { TextLink } from "@/components/text-link";
 import { ConfirmAction } from "@/components/confirm-action";
 import { PageLoading } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
@@ -16,8 +17,9 @@ import { formatAccountBalance, toAccountView } from "@/features/accounts/view";
 import { formatLedgerDate, formatMoney, todayInIndia } from "@/features/shared/format";
 import { TransactionList } from "@/features/transactions/transaction-list";
 import { lookupsFrom, toTransactionView } from "@/features/transactions/view";
+import { orNotFound } from "@/features/shared/not-found";
 import { requireOwner } from "@/server/auth/session";
-import { FinanceNotFoundError, finance } from "@/server/finance";
+import { finance } from "@/server/finance";
 
 export const metadata: Metadata = { title: "Account" };
 
@@ -32,10 +34,7 @@ export default function AccountPage({ params }: PageProps<"/accounts/[id]">) {
 async function AccountDetail({ params }: Pick<PageProps<"/accounts/[id]">, "params">) {
   const owner = await requireOwner();
   const { id } = await params;
-  const detail = await finance.getAccount(owner, id).catch((error: unknown) => {
-    if (error instanceof FinanceNotFoundError) notFound();
-    throw error;
-  });
+  const detail = await orNotFound(finance.getAccount(owner, id));
   const [accounts, categories, recent] = await Promise.all([
     finance.listAccounts(owner),
     finance.listCategories(owner),
@@ -72,9 +71,9 @@ async function AccountDetail({ params }: Pick<PageProps<"/accounts/[id]">, "para
       </div>
 
       {view.archived ? (
-        <p role="status" className="rounded-lg border bg-muted/40 p-3 text-sm">
+        <Callout>
           This account is archived. Its history and balance are kept, but it cannot take new transactions until restored.
-        </p>
+        </Callout>
       ) : (
         <div className="grid gap-2">
           <div className="flex flex-wrap gap-2">
@@ -164,9 +163,9 @@ async function AccountDetail({ params }: Pick<PageProps<"/accounts/[id]">, "para
           <h2 id="recent" className="text-lg font-semibold">
             Recent activity
           </h2>
-          <Link href={`/transactions?account=${view.id}`} className="text-sm underline underline-offset-4">
+          <TextLink href={`/transactions?account=${view.id}`} className="text-sm">
             All transactions
-          </Link>
+          </TextLink>
         </div>
         <TransactionList
           transactions={recent.map((t) => toTransactionView(t, lookups, view.id))}

@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
+import { TextLink } from "@/components/text-link";
 import { ConfirmAction } from "@/components/confirm-action";
 import { PageLoading } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
@@ -15,8 +15,9 @@ import { voidTransactionAction } from "@/features/transactions/actions";
 import { TransactionDetailsForm } from "@/features/transactions/details-form";
 import { TransactionList } from "@/features/transactions/transaction-list";
 import { lookupsFrom, toTransactionView } from "@/features/transactions/view";
+import { orNotFound } from "@/features/shared/not-found";
 import { requireOwner } from "@/server/auth/session";
-import { FinanceNotFoundError, finance } from "@/server/finance";
+import { finance } from "@/server/finance";
 
 export const metadata: Metadata = { title: "Transaction" };
 
@@ -31,10 +32,7 @@ export default function TransactionPage({ params }: PageProps<"/transactions/[id
 async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]">, "params">) {
   const owner = await requireOwner();
   const { id } = await params;
-  const transaction = await finance.getTransaction(owner, id).catch((error: unknown) => {
-    if (error instanceof FinanceNotFoundError) notFound();
-    throw error;
-  });
+  const transaction = await orNotFound(finance.getTransaction(owner, id));
   const [accounts, categories, refunds, refunded] = await Promise.all([
     finance.listAccounts(owner),
     finance.listCategories(owner),
@@ -51,9 +49,9 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
   const view = toTransactionView(transaction, lookups);
   const link = (accountId: string | null) =>
     accountId ? (
-      <Link href={`/accounts/${accountId}`} className="underline underline-offset-4">
+      <TextLink href={`/accounts/${accountId}`}>
         {lookups.accounts.get(accountId)?.name ?? "Account"}
-      </Link>
+      </TextLink>
     ) : null;
 
   return (
@@ -108,10 +106,10 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
             <dt className="text-muted-foreground">Refund of</dt>
             <dd>
               {refunded ? (
-                <Link href={`/transactions/${refunded.id}`} className="underline underline-offset-4">
+                <TextLink href={`/transactions/${refunded.id}`}>
                   {toTransactionView(refunded, lookups).title} of {formatMoney(refunded.amount)} on{" "}
                   {formatLedgerDate(refunded.occurredOn)}
-                </Link>
+                </TextLink>
               ) : (
                 "A purchase that is not recorded in Finora (a merchant credit)"
               )}
@@ -129,9 +127,9 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
               {transaction.replacedByTransactionId ? (
                 <>
                   {" "}
-                  <Link href={`/transactions/${transaction.replacedByTransactionId}`} className="underline underline-offset-4">
+                  <TextLink href={`/transactions/${transaction.replacedByTransactionId}`}>
                     See the replacement
-                  </Link>
+                  </TextLink>
                   .
                 </>
               ) : null}
@@ -215,9 +213,9 @@ async function TransactionDetail({ params }: Pick<PageProps<"/transactions/[id]"
       {transaction.kind === "opening_balance" && !transaction.voidedAt && transaction.destinationAccountId ? (
         <p className="text-sm text-muted-foreground">
           Opening balances are corrected from the{" "}
-          <Link href={`/accounts/${transaction.destinationAccountId}`} className="underline underline-offset-4">
+          <TextLink href={`/accounts/${transaction.destinationAccountId}`}>
             account page
-          </Link>
+          </TextLink>
           .
         </p>
       ) : null}

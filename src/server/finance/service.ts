@@ -190,17 +190,24 @@ async function summarize(stores: FinanceStores, account: FinancialAccountRecord)
   };
 }
 
-async function mustFindAccount(finance: FinanceStore, id: string, lock = false): Promise<FinancialAccountRecord> {
-  const account = isCanonicalUuid(id) ? await (lock ? finance.lockAccount(id) : finance.findAccount(id)) : null;
-  if (!account) throw new FinanceNotFoundError("account");
-  return account;
-}
-
-async function mustFindTransaction(finance: FinanceStore, id: string, lock = false): Promise<TransactionRecord> {
-  const found = isCanonicalUuid(id) ? await (lock ? finance.lockTransaction(id) : finance.findTransaction(id)) : null;
-  if (!found) throw new FinanceNotFoundError("transaction");
+/** Looks a record up by id; a malformed id and a missing (or foreign) record are the same error. */
+async function mustFind<T>(
+  resource: ConstructorParameters<typeof FinanceNotFoundError>[0],
+  id: string,
+  find: (id: string) => Promise<T | null>,
+): Promise<T> {
+  const found = isCanonicalUuid(id) ? await find(id) : null;
+  if (!found) throw new FinanceNotFoundError(resource);
   return found;
 }
+
+const mustFindAccount = (finance: FinanceStore, id: string, lock = false) =>
+  mustFind("account", id, (i) => (lock ? finance.lockAccount(i) : finance.findAccount(i)));
+
+const mustFindTransaction = (finance: FinanceStore, id: string, lock = false) =>
+  mustFind("transaction", id, (i) => (lock ? finance.lockTransaction(i) : finance.findTransaction(i)));
+
+const mustFindCategory = (finance: FinanceStore, id: string) => mustFind("category", id, (i) => finance.findCategory(i));
 
 /**
  * Posts `plan` through the ledger (idempotent on `key`) and records the
@@ -538,8 +545,7 @@ export function createFinanceService(run: FinanceRunner) {
       const name = issues.capture("name", () => parseName(input.name, "Category name"));
       issues.throwIfAny();
       return inTransaction(owner, async ({ finance }) => {
-        const category = isCanonicalUuid(id) ? await finance.findCategory(id) : null;
-        if (!category) throw new FinanceNotFoundError("category");
+        const category = await mustFindCategory(finance, id);
         await finance.lockKey(`category-name:${category.kind}`);
         if (await finance.categoryNameTaken(category.kind, name!, category.id)) throw new FinanceConflictError("category-name-taken");
         await finance.renameCategory(category.id, name!);
@@ -548,8 +554,7 @@ export function createFinanceService(run: FinanceRunner) {
 
     async setCategoryArchived(owner: AuthorizedOwner, id: string, archived: boolean): Promise<void> {
       return inTransaction(owner, async ({ finance }) => {
-        const category = isCanonicalUuid(id) ? await finance.findCategory(id) : null;
-        if (!category) throw new FinanceNotFoundError("category");
+        const category = await mustFindCategory(finance, id);
         await finance.setCategoryArchived(category.id, archived);
       });
     },

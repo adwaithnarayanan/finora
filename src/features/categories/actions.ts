@@ -6,31 +6,24 @@ import { redirect } from "next/navigation";
 import { requireOwner } from "@/server/auth/session";
 import { finance } from "@/server/finance";
 
-import { toActionState, toActionStateOrFallback } from "../shared/errors";
-import { type ActionState, formEntries } from "../shared/form-state";
+import { toActionStateOrFallback } from "../shared/errors";
+import { runFormAction } from "../shared/form-action";
+import type { ActionState } from "../shared/form-state";
 
 export async function createCategoryAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const owner = await requireOwner();
-  const input = formEntries(formData);
-  try {
+  return runFormAction(formData, async (owner, input) => {
     await finance.createCategory(owner, { name: input["name"], kind: input["kind"] });
-  } catch (error) {
-    return { ...toActionState(error), values: input };
-  }
-  revalidatePath("/categories");
-  return { message: `Added ${input["name"]?.trim()}.` };
+    revalidatePath("/categories");
+    return { message: `Added ${input["name"]?.trim()}.` };
+  });
 }
 
 export async function renameCategoryAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const owner = await requireOwner();
-  const input = formEntries(formData);
-  try {
+  return runFormAction(formData, async (owner, input) => {
     await finance.renameCategory(owner, input["categoryId"] ?? "", { name: input["name"] });
-  } catch (error) {
-    return { ...toActionState(error), values: input };
-  }
-  revalidatePath("/categories");
-  return { message: "Renamed." };
+    revalidatePath("/categories");
+    return { message: "Renamed." };
+  });
 }
 
 /**

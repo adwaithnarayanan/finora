@@ -1,35 +1,34 @@
 "use client";
 
-import { useActionState } from "react";
-
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { NativeSelect } from "@/components/ui/native-select";
 
 import { Field, FormError } from "../shared/field";
-import { type ActionState, INITIAL_STATE } from "../shared/form-state";
+import { SelectField } from "../shared/select-field";
+import { useFormAction } from "../shared/use-form-action";
 import { createCategoryAction, renameCategoryAction } from "./actions";
 
+const KINDS = [
+  { value: "expense", label: "Expense" },
+  { value: "income", label: "Income" },
+] as const;
+
 export function CreateCategoryForm() {
-  const [state, action, pending] = useActionState<ActionState, FormData>(createCategoryAction, INITIAL_STATE);
-  const errors = state.fieldErrors ?? {};
-  const values = state.error ? (state.values ?? {}) : {};
+  const { state, action, pending, errors, values: echoed } = useFormAction(createCategoryAction);
+  const values = state.error ? echoed : {};
   return (
     <form action={action} className="grid gap-4 sm:grid-cols-[1fr_12rem_auto] sm:items-end" noValidate>
       <Field name="name" label="New category" error={errors["name"]}>
         {(props) => <Input {...props} maxLength={60} autoComplete="off" defaultValue={values["name"]} required />}
       </Field>
-      <Field name="kind" label="Kind" error={errors["kind"]}>
-        {(props) => (
-          <NativeSelect {...props} defaultValue={values["kind"] ?? "expense"}>
-            <option value="expense">Expense</option>
-            <option value="income">Income</option>
-          </NativeSelect>
-        )}
-      </Field>
-      <Button type="submit" disabled={pending}>
-        {pending ? "Adding…" : "Add category"}
-      </Button>
+      <SelectField
+        name="kind"
+        label="Kind"
+        error={errors["kind"]}
+        options={KINDS}
+        defaultValue={values["kind"] ?? "expense"}
+      />
+      <Button type="submit" loading={pending} loadingText="Adding…">Add category</Button>
       <div className="sm:col-span-3">
         <FormError state={state} />
       </div>
@@ -38,7 +37,7 @@ export function CreateCategoryForm() {
 }
 
 export function RenameCategoryForm({ id, name }: { id: string; name: string }) {
-  const [state, action, pending] = useActionState<ActionState, FormData>(renameCategoryAction, INITIAL_STATE);
+  const { state, action, pending } = useFormAction(renameCategoryAction);
   const field = `name-${id}`;
   return (
     <form action={action} className="flex flex-wrap items-center gap-2" noValidate>
@@ -54,7 +53,7 @@ export function RenameCategoryForm({ id, name }: { id: string; name: string }) {
         className="h-7 w-48"
         aria-invalid={state.error ? true : undefined}
       />
-      <Button type="submit" variant="ghost" size="sm" disabled={pending}>
+      <Button type="submit" loading={pending} loadingText="Saving…" variant="ghost" size="sm">
         Rename
       </Button>
       {state.error ? (

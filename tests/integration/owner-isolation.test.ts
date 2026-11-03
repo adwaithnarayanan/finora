@@ -2,12 +2,12 @@ import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { parseOwnerId } from "@/domain/owner";
-import { authorizeOwner } from "@/server/auth/authorize";
 import type { AuthorizedOwner } from "@/server/auth/types";
 import { PrismaOwnerDirectory } from "@/server/db/owner-directory";
 import { runInIdentityContext, runInOwnerScope } from "@/server/db/scope";
 
 import { TEST_PROVIDER, adminClient, appPrisma, deleteOwners, seedOwner, type SeededOwner } from "./support/db";
+import { authorize as authorizeOn } from "./support/ledger";
 
 /**
  * Proves owner isolation at the database layer, as the finora_app role,
@@ -21,14 +21,7 @@ let b: SeededOwner;
 let disabled: SeededOwner;
 let ownerA: AuthorizedOwner;
 
-async function authorize(subject: string): Promise<AuthorizedOwner> {
-  const access = await authorizeOwner({
-    identities: { getVerifiedIdentity: async () => ({ provider: TEST_PROVIDER, subject }) },
-    owners: new PrismaOwnerDirectory(prisma),
-  });
-  if (access.status !== "authorized") throw new Error(`expected authorized, got ${access.status}`);
-  return access.owner;
-}
+const authorize = (subject: string) => authorizeOn(prisma, subject);
 
 beforeAll(async () => {
   admin = await adminClient();

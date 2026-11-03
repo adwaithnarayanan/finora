@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 
 import { AuthCard } from "@/features/auth/auth-card";
+import { TextLink } from "@/components/text-link";
 
 export const metadata: Metadata = { title: "No access" };
 
@@ -13,9 +13,9 @@ export default function UnauthorizedPage() {
     >
       <p className="text-sm text-muted-foreground">
         If you are the owner, sign in with the owner account.{" "}
-        <Link href="/login" className="underline underline-offset-4">
+        <TextLink href="/login">
           Go to sign in
-        </Link>
+        </TextLink>
       </p>
     </AuthCard>
   );

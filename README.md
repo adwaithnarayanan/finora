@@ -1,10 +1,9 @@
 # Finora
 
-Private, double-entry personal finance PWA. Currently at **Milestone 4B:
-financial accounts and basic transactions** (bank and cash accounts, opening
-balances, income, expenses and transfers), built on the double-entry ledger
-core (Milestone 3) and the database/auth foundation (Milestone 2). Sign-in
-uses **email and password**; Google OAuth (Milestone 4A) is deferred.
+Private, double-entry personal finance PWA: bank, cash and credit-card
+accounts, opening balances, income, expenses, transfers, card payments and
+refunds, on a double-entry ledger. Sign-in uses **email and password**; Google
+OAuth is deferred.
 
 Architecture and decisions: [`docs/adr/`](docs/adr/). Operations:
 [`docs/runbooks/`](docs/runbooks/).
@@ -87,49 +86,32 @@ see [`docs/runbooks/hosted-setup.md`](docs/runbooks/hosted-setup.md).
 
 ## Accounts and transactions
 
-- `/accounts`: bank, cash and credit-card accounts with balances derived
-  from posted journal lines (never stored). Create one with an optional
-  opening balance, which is posted against opening-balance equity, not
-  recorded as income; for a credit card it is the amount owed today, and
-  the card's balance shows as "Owed …". Edit the name, or switch between bank
-  and cash (a credit card's type is fixed); archive (history kept), restore,
-  or delete one that has no history. A credit card can pay an expense
-  (Milestone 5B: Dr the expense category, Cr the card, so the amount owed
-  grows), be repaid from a bank or cash account (5C, `card_payment`: Dr the
-  card, Cr the paying account), and be credited by a refund (5D,
-  `card_refund`: Dr the card, Cr the expense category, so the amount owed and
-  that category's expenses both fall — a refund is never income). Card income
-  and transfers involving a card are still not supported
-  ([ADR 0008](docs/adr/0008-credit-card-accounts.md)).
-  **Hosted Supabase has not been migrated for credit cards**
-  (`20261025000600`, `20261025000700`, `20261025000800`, `20261026000000`,
-  `20261026000100`, `20261029000000`, `20261029000100`): they are tested on
-  local scratch databases only. They need `20261025000500` and the 4D code
-  deployed first, and once a card exists the application should not be
-  rolled back to pre-5A code; see the hosted runbook ("Credit-card account
-  migrations", "Card-expense migration", "Card-payment migrations" and
-  "Card-refund migrations"). The 5D migrations in particular must be applied
-  **before** the 5D code, which reads and writes the column they add on every
-  transaction, not only on refunds.
-- `/transactions/new`: record income, an expense (from a bank or cash
-  account, or on a credit card), a transfer between bank and cash accounts, a
-  payment towards a credit card, or a refund onto one. A refund is either
-  linked to a recorded card purchase — which fixes its category and caps it at
-  what is left of that purchase — or an unlinked merchant credit against an
-  expense category you choose. The browser submits intent only; server-side
-  templates build the journal lines.
-- `/transactions`: history with search and filters (date, type, account,
-  category). Each transaction can have its payee or note edited, or be voided
-  through a ledger reversal. A card purchase's page also shows how much of it
-  has been refunded and what is left, and refuses to void it until its refunds
-  are voided. Opening balances are corrected from the account page (reversal
-  plus replacement).
-- `/categories`: income and expense categories; a new owner can add a
-  default set with one click (pages never create categories by themselves).
+- `/accounts`: bank, cash and credit-card accounts. Balances are derived from
+  posted journal lines, never stored. An optional opening balance is posted
+  against opening-balance equity, not recorded as income; for a card it is the
+  amount owed today. Accounts can be renamed, archived, restored, or deleted
+  when they have no history.
+- `/transactions/new`: record income, an expense (from a bank or cash account,
+  or on a credit card), a transfer between bank and cash accounts, a payment
+  towards a credit card, or a refund onto one. The browser submits intent
+  only; server-side templates build the journal lines.
+- `/transactions`: history with search and filters. A transaction's payee or
+  note can be edited, and it can be voided through a ledger reversal.
+  Opening balances are corrected from the account page.
+- `/categories`: income and expense categories; a new owner adds the default
+  set with one click (pages never create categories by themselves).
 
 Amounts are typed as decimals, parsed exactly, and shown in `en-IN` format;
-INR is the default currency. The accounting treatment is in
-[ADR 0006](docs/adr/0006-accounts-and-transactions.md).
+INR is the default currency. Accounting treatment:
+[ADR 0006](docs/adr/0006-accounts-and-transactions.md) and, for credit cards,
+[ADR 0008](docs/adr/0008-credit-card-accounts.md).
+
+**Hosted Supabase has not been migrated for credit cards** (migrations
+`20261025000600` onward); they are tested on local scratch databases only.
+Apply them in order, before the code that needs them, and do not roll the
+application back once a card exists. See the hosted runbook
+([`docs/runbooks/hosted-setup.md`](docs/runbooks/hosted-setup.md)) and
+ADR 0008's Migrations section.
 
 ## Ledger
 
@@ -204,6 +186,12 @@ Backups: [`docs/runbooks/backup-and-restore.md`](docs/runbooks/backup-and-restor
   integration and e2e suites. Tests that prove other sign-in methods are
   refused build those sessions in the **local** Auth database
   (`tests/support/google-simulation.ts`). Google itself is never contacted.
+- To run the database-backed suites without touching your development data,
+  start a second stack: copy the repo's `supabase/` folder into a new directory <copy>, give the
+  copy's `config.toml` a different `project_id` and ports, start it with
+  `npx supabase start --workdir <copy>`, and run the suites with
+  `SUPABASE_WORKDIR=<copy>` set. Check `npx supabase status` under that
+  variable first: the ports must be the copy's.
 - Local auth emails go to the Mailpit inbox (http://127.0.0.1:55324);
   nothing is sent externally.
 

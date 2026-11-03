@@ -5,15 +5,12 @@ import { redirect } from "next/navigation";
 import { requireOwner } from "@/server/auth/session";
 import { finance } from "@/server/finance";
 
-import { toActionState } from "../shared/errors";
-import { type ActionState, formEntries } from "../shared/form-state";
+import { runFormAction } from "../shared/form-action";
+import type { ActionState } from "../shared/form-state";
 
 /** Creates an account (and its opening balance, if given) atomically. */
 export async function createAccountAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const owner = await requireOwner();
-  const input = formEntries(formData);
-  let accountId: string;
-  try {
+  return runFormAction(formData, async (owner, input) => {
     const { value } = await finance.createAccount(owner, {
       name: input["name"],
       type: input["type"],
@@ -23,36 +20,25 @@ export async function createAccountAction(_prev: ActionState, formData: FormData
         : null,
       idempotencyKey: input["idempotencyKey"],
     });
-    accountId = value.id;
-  } catch (error) {
-    return { ...toActionState(error), values: input };
-  }
-  redirect(`/accounts/${accountId}`);
+    return { redirectTo: `/accounts/${value.id}` };
+  });
 }
 
 export async function updateAccountAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const owner = await requireOwner();
-  const input = formEntries(formData);
-  try {
+  return runFormAction(formData, async (owner, input) => {
     await finance.updateAccount(owner, input["accountId"] ?? "", { name: input["name"], type: input["type"] });
-  } catch (error) {
-    return { ...toActionState(error), values: input };
-  }
-  return { message: "Saved." };
+    return { message: "Saved." };
+  });
 }
 
 export async function setOpeningBalanceAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const owner = await requireOwner();
-  const input = formEntries(formData);
-  const accountId = input["accountId"] ?? "";
-  try {
+  return runFormAction(formData, async (owner, input) => {
+    const accountId = input["accountId"] ?? "";
     const request = { amount: input["openingAmount"] ?? "", date: input["openingDate"], idempotencyKey: input["idempotencyKey"] };
     if (input["mode"] === "correct") await finance.correctOpeningBalance(owner, accountId, request);
     else await finance.setOpeningBalance(owner, accountId, request);
-  } catch (error) {
-    return { ...toActionState(error), values: input };
-  }
-  redirect(`/accounts/${accountId}`);
+    return { redirectTo: `/accounts/${accountId}` };
+  });
 }
 
 async function lifecycle(formData: FormData, change: "archive" | "restore" | "delete"): Promise<void> {

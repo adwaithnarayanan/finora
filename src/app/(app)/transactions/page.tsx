@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 
+import { Callout } from "@/components/callout";
+import { TextLink } from "@/components/text-link";
 import { PageHeader, PageLoading } from "@/components/page-header";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -90,9 +92,9 @@ async function History({ searchParams }: Pick<PageProps<"/transactions">, "searc
   return (
     <div className="grid gap-6">
       {recorded ? (
-        <p role="status" className="rounded-lg border bg-muted/40 p-3 text-sm">
+        <Callout>
           Transaction recorded.
-        </p>
+        </Callout>
       ) : null}
       <form method="get" className="grid gap-3 rounded-lg border p-4 sm:grid-cols-3 lg:grid-cols-4" aria-label="Filter transactions">
         <div className="grid gap-1.5">
@@ -167,9 +169,9 @@ async function History({ searchParams }: Pick<PageProps<"/transactions">, "searc
           ) : (
             <>
               No transactions yet.{" "}
-              <Link href="/transactions/new" className="underline underline-offset-4">
+              <TextLink href="/transactions/new">
                 Record your first one
-              </Link>
+              </TextLink>
               .
             </>
           )

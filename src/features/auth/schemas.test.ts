@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formEntries, signInSchema } from "./schemas";
+import { signInSchema } from "./schemas";
 
 describe("signInSchema", () => {
   it("accepts an email and any non-empty password", () => {
@@ -17,14 +17,5 @@ describe("signInSchema", () => {
     ["over-long next", { email: "owner@example.com", password: "x", next: `/${"a".repeat(2048)}` }],
   ])("rejects %s", (_label, input) => {
     expect(signInSchema.safeParse(input).success).toBe(false);
-  });
-});
-
-describe("formEntries", () => {
-  it("keeps string fields and drops files", () => {
-    const form = new FormData();
-    form.set("email", "a@b.co");
-    form.set("upload", new Blob(["x"]), "x.txt");
-    expect(formEntries(form)).toEqual({ email: "a@b.co" });
   });
 });

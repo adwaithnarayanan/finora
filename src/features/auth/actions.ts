@@ -10,7 +10,8 @@ import { createSupabaseServerClient } from "@/server/auth/supabase/server-client
 import { endSession } from "@/server/auth/supabase/sign-out";
 import { getOwnerDirectory } from "@/server/db";
 
-import { type FormState, formEntries, signInSchema } from "./schemas";
+import { type ActionState, formEntries } from "../shared/form-state";
+import { signInSchema } from "./schemas";
 
 /** One message for every failure, so responses never reveal which accounts exist. */
 const INVALID_CREDENTIALS = "Invalid email or password.";
@@ -21,7 +22,7 @@ const RATE_LIMITED = "Too many attempts. Wait a few minutes and try again.";
  * only creates a session; access additionally needs the operator's approval
  * and an owner mapping. Anyone else is signed out again immediately.
  */
-export async function signIn(_prev: FormState, formData: FormData): Promise<FormState> {
+export async function signIn(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const parsed = signInSchema.safeParse(formEntries(formData));
   if (!parsed.success) return { error: INVALID_CREDENTIALS };
   const { email, password, next } = parsed.data;

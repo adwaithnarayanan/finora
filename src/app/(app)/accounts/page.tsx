@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 
+import { TextLink } from "@/components/text-link";
 import { PageHeader, PageLoading } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -77,9 +78,9 @@ async function AccountList({ searchParams }: Pick<PageProps<"/accounts">, "searc
       </ul>
       {archivedCount > 0 ? (
         <p className="text-sm">
-          <Link href={showArchived ? "/accounts" : "/accounts?archived=1"} className="underline underline-offset-4">
+          <TextLink href={showArchived ? "/accounts" : "/accounts?archived=1"}>
             {showArchived ? "Hide archived accounts" : `Show ${archivedCount} archived account${archivedCount === 1 ? "" : "s"}`}
-          </Link>
+          </TextLink>
         </p>
       ) : null}
     </div>

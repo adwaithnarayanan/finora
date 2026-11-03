@@ -4,6 +4,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 
+import { Callout } from "@/components/callout";
+import { TextLink } from "@/components/text-link";
 import { PageHeader, PageLoading } from "@/components/page-header";
 import { buttonVariants } from "@/components/ui/button";
 import { toAccountOptions } from "@/features/accounts/view";
@@ -101,22 +103,22 @@ async function NewTransaction({ searchParams }: Pick<PageProps<"/transactions/ne
           <p>
             Income and expenses each need a category; transfers between your accounts don&apos;t. Add the default set
             (Salary, Groceries, Rent and more) to start right away, or create your own on the{" "}
-            <Link href="/categories" className="underline underline-offset-4">
+            <TextLink href="/categories">
               Categories
-            </Link>{" "}
+            </TextLink>{" "}
             page. You can rename or archive any of them later.
           </p>
           <DefaultCategoriesButton returnTo="/transactions/new" />
         </section>
       ) : missing.length > 0 ? (
-        <p role="status" className="rounded-lg border bg-muted/40 p-4 text-sm">
+        <Callout className="p-4">
           You have no active {missing.join(" or ")} categories, so {missing.length === 2 ? "income and expenses" : missing[0] === "income" ? "income" : "expenses"}{" "}
           can&apos;t be recorded yet. Add or restore one on the{" "}
-          <Link href="/categories" className="underline underline-offset-4">
+          <TextLink href="/categories">
             Categories
-          </Link>{" "}
+          </TextLink>{" "}
           page.
-        </p>
+        </Callout>
       ) : null}
       <TransactionForm
         // Remount when the starting kind changes (e.g. after adding the

@@ -1,15 +1,16 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 
 import { Field, FormError } from "../shared/field";
-import { type ActionState, INITIAL_STATE } from "../shared/form-state";
+import { SelectField } from "../shared/select-field";
+import { useFormAction } from "../shared/use-form-action";
 import { recordTransactionAction } from "./actions";
+import { RadioCard } from "./radio-card";
 
 type Kind = "income" | "expense" | "transfer" | "card_payment" | "card_refund";
 type Option = { id: string; label: string };
@@ -29,6 +30,11 @@ const KINDS: readonly { value: Kind; label: string; hint: string }[] = [
   { value: "card_refund", label: "Card refund", hint: "Money a merchant gave back onto a credit card" },
 ];
 
+const REFUND_MODES = [
+  { value: "linked", linked: true, label: "A purchase recorded in Finora", hint: "Pick it below; the refund goes back to its category" },
+  { value: "unlinked", linked: false, label: "A purchase not in Finora", hint: "A merchant credit; choose the expense category yourself" },
+] as const;
+
 /** The submit button's label; "Record card_payment" would read badly. */
 const ACTION_LABEL: Record<Kind, string> = {
   expense: "Record expense",
@@ -38,44 +44,36 @@ const ACTION_LABEL: Record<Kind, string> = {
   card_refund: "Record refund",
 };
 
-function AccountSelect({
+const toOptions = (items: readonly Option[]) => items.map((i) => ({ value: i.id, label: i.label }));
+
+function CategorySelect({
   name,
   label,
-  accounts,
-  error,
   hint,
-  round,
+  categories,
+  error,
   value,
-  onChange,
 }: {
   name: string;
   label: string;
-  accounts: readonly AccountOption[];
-  error: string | undefined;
   hint?: string;
-  /** Changes with every action result, so the select remounts showing `value`. */
-  round: number;
-  /** The current choice, mirrored by `onChange`; applied when the select mounts. */
-  value: string;
-  onChange: (id: string) => void;
+  categories: readonly Option[];
+  error: string | undefined;
+  /** The submitted choice; a refused submission remounts the select showing it. */
+  value: string | undefined;
 }) {
   return (
-    <Field name={name} label={label} hint={hint} error={error}>
-      {(props) => (
-        // Uncontrolled: the form is reset after every submission, and a reset
-        // restores each select to its default, which React sets from
-        // defaultValue on mount only (a controlled value is not kept). Keyed on
-        // `round` so a refused submission remounts it with what was submitted.
-        <NativeSelect {...props} key={round} defaultValue={value} onChange={(e) => onChange(e.target.value)} required>
-          <option value="">Choose an account</option>
-          {accounts.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.label}
-            </option>
-          ))}
-        </NativeSelect>
-      )}
-    </Field>
+    <SelectField
+      name={name}
+      label={label}
+      hint={hint}
+      error={error}
+      options={toOptions(categories)}
+      placeholder="Choose a category"
+      defaultValue={value ?? ""}
+      remountKey={value ?? ""}
+      required
+    />
   );
 }
 
@@ -106,9 +104,7 @@ export function TransactionForm({
   /** Card purchases with something left to refund, for the linked-refund selector. */
   purchases: readonly PurchaseOption[];
 }) {
-  const [state, action, pending] = useActionState<ActionState, FormData>(recordTransactionAction, INITIAL_STATE);
-  const values = state.values ?? {};
-  const errors = state.fieldErrors ?? {};
+  const { state, action, pending, errors, values } = useFormAction(recordTransactionAction);
   const [kind, setKind] = useState<Kind>((values["kind"] as Kind | undefined) ?? initialKind);
   const [source, setSource] = useState(values["sourceAccountId"] ?? initialSourceAccountId ?? "");
   const [destination, setDestination] = useState(values["destinationAccountId"] ?? initialDestinationAccountId ?? "");
@@ -176,35 +172,27 @@ export function TransactionForm({
         <legend className="mb-1 text-sm font-medium">Type</legend>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {KINDS.map((k) => (
-            <label
+            <RadioCard
               key={k.value}
-              className="flex cursor-pointer items-start gap-2 rounded-lg border p-3 text-sm has-checked:border-primary has-checked:bg-muted/60 has-focus-visible:ring-2 has-focus-visible:ring-ring"
-            >
-              <input
-                type="radio"
-                name="kind"
-                value={k.value}
-                // Uncontrolled, so the reset after a submission restores the
-                // current kind: React keeps defaultChecked up to date.
-                defaultChecked={kind === k.value}
-                onChange={() => changeKind(k.value)}
-                className="mt-0.5"
-              />
-              <span>
-                <span className="block font-medium">{k.label}</span>
-                <span className="block text-xs text-muted-foreground">{k.hint}</span>
-              </span>
-            </label>
+              name="kind"
+              value={k.value}
+              label={k.label}
+              hint={k.hint}
+              defaultChecked={kind === k.value}
+              onChange={() => changeKind(k.value)}
+            />
           ))}
         </div>
       </fieldset>
 
       <div className="grid gap-5 sm:grid-cols-2">
         {kind !== "income" && kind !== "card_refund" ? (
-          <AccountSelect
+          <SelectField
             name="sourceAccountId"
             label={kind === "transfer" ? "From account" : "Paid from"}
-            accounts={sources}
+            options={toOptions(sources)}
+            placeholder="Choose an account"
+            required
             error={errors["sourceAccountId"]}
             hint={
               kind === "expense" && currency?.card
@@ -213,13 +201,13 @@ export function TransactionForm({
                   ? "The bank or cash account the money comes from."
                   : undefined
             }
-            round={round}
-            value={source}
+            remountKey={round}
+            defaultValue={source}
             onChange={changeSource}
           />
         ) : null}
         {kind !== "expense" ? (
-          <AccountSelect
+          <SelectField
             name="destinationAccountId"
             label={
               kind === "transfer"
@@ -230,7 +218,9 @@ export function TransactionForm({
                     ? "Refunded to"
                     : "Received into"
             }
-            accounts={destinations}
+            options={toOptions(destinations)}
+            placeholder="Choose an account"
+            required
             error={errors["destinationAccountId"]}
             hint={
               kind === "card_payment"
@@ -239,65 +229,39 @@ export function TransactionForm({
                   ? "The refund reduces the amount owed on this card and reduces your expenses. It is not income."
                   : undefined
             }
-            round={round}
-            value={destination}
+            remountKey={round}
+            defaultValue={destination}
             onChange={changeDestination}
           />
         ) : null}
         {kind === "income" ? (
-          <Field name="incomeCategoryId" label="Category" error={errors["incomeCategoryId"]}>
-            {(props) => (
-              // Keyed on the submitted value: a select applies defaultValue only on
-              // mount, and the form is reset after every submission.
-              <NativeSelect {...props} key={values["incomeCategoryId"] ?? ""} defaultValue={values["incomeCategoryId"] ?? ""} required>
-                <option value="">Choose a category</option>
-                {incomeCategories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.label}
-                  </option>
-                ))}
-              </NativeSelect>
-            )}
-          </Field>
+          <CategorySelect name="incomeCategoryId" label="Category" categories={incomeCategories} error={errors["incomeCategoryId"]} value={values["incomeCategoryId"]} />
         ) : null}
         {kind === "card_refund" ? (
           <>
             <fieldset className="grid gap-2 sm:col-span-2">
               <legend className="mb-1 text-sm font-medium">What is being refunded</legend>
               <div className="grid gap-2 sm:grid-cols-2">
-                {[
-                  { linked: true, label: "A purchase recorded in Finora", hint: "Pick it below; the refund goes back to its category" },
-                  { linked: false, label: "A purchase not in Finora", hint: "A merchant credit; choose the expense category yourself" },
-                ].map((mode) => (
-                  <label
-                    key={String(mode.linked)}
-                    className="flex cursor-pointer items-start gap-2 rounded-lg border p-3 text-sm has-checked:border-primary has-checked:bg-muted/60 has-focus-visible:ring-2 has-focus-visible:ring-ring"
-                  >
-                    <input
-                      type="radio"
-                      name="refundMode"
-                      value={mode.linked ? "linked" : "unlinked"}
-                      // Uncontrolled, like the kind radios: the reset after a
-                      // submission restores the current mode from defaultChecked.
-                      defaultChecked={linkedRefund === mode.linked}
-                      onChange={() => {
-                        setLinkedRefund(mode.linked);
-                        // Leaving linked mode drops the purchase, so no stale
-                        // id is submitted with an unlinked refund.
-                        if (!mode.linked) setPurchase("");
-                      }}
-                      className="mt-0.5"
-                    />
-                    <span>
-                      <span className="block font-medium">{mode.label}</span>
-                      <span className="block text-xs text-muted-foreground">{mode.hint}</span>
-                    </span>
-                  </label>
+                {REFUND_MODES.map((mode) => (
+                  <RadioCard
+                    key={mode.value}
+                    name="refundMode"
+                    value={mode.value}
+                    label={mode.label}
+                    hint={mode.hint}
+                    defaultChecked={linkedRefund === mode.linked}
+                    onChange={() => {
+                      setLinkedRefund(mode.linked);
+                      // Leaving linked mode drops the purchase, so no stale
+                      // id is submitted with an unlinked refund.
+                      if (!mode.linked) setPurchase("");
+                    }}
+                  />
                 ))}
               </div>
             </fieldset>
             {linkedRefund ? (
-              <Field
+              <SelectField
                 name="refundsTransactionId"
                 label="Purchase being refunded"
                 hint={
@@ -310,62 +274,27 @@ export function TransactionForm({
                         : "Fully refunded and voided purchases are not listed."
                 }
                 error={errors["refundsTransactionId"]}
-              >
-                {(props) => (
-                  // Keyed on `round` so a refused submission remounts it with
-                  // what was submitted (a select applies defaultValue on mount only).
-                  <NativeSelect
-                    {...props}
-                    key={round}
-                    defaultValue={purchase}
-                    onChange={(e) => setPurchase(e.target.value)}
-                    required
-                  >
-                    <option value="">Choose a purchase</option>
-                    {cardPurchases.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.label}
-                      </option>
-                    ))}
-                  </NativeSelect>
-                )}
-              </Field>
+                options={toOptions(cardPurchases)}
+                placeholder="Choose a purchase"
+                defaultValue={purchase}
+                remountKey={round}
+                onChange={setPurchase}
+                required
+              />
             ) : (
-              <Field
+              <CategorySelect
                 name="refundCategoryId"
                 label="Category being refunded"
                 hint="The expense category the original purchase belonged to. The refund reduces that category's expenses."
+                categories={expenseCategories}
                 error={errors["refundCategoryId"]}
-              >
-                {(props) => (
-                  <NativeSelect {...props} key={values["refundCategoryId"] ?? ""} defaultValue={values["refundCategoryId"] ?? ""} required>
-                    <option value="">Choose a category</option>
-                    {expenseCategories.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.label}
-                      </option>
-                    ))}
-                  </NativeSelect>
-                )}
-              </Field>
+                value={values["refundCategoryId"]}
+              />
             )}
           </>
         ) : null}
         {kind === "expense" ? (
-          <Field name="expenseCategoryId" label="Category" error={errors["expenseCategoryId"]}>
-            {(props) => (
-              // Keyed on the submitted value: a select applies defaultValue only on
-              // mount, and the form is reset after every submission.
-              <NativeSelect {...props} key={values["expenseCategoryId"] ?? ""} defaultValue={values["expenseCategoryId"] ?? ""} required>
-                <option value="">Choose a category</option>
-                {expenseCategories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.label}
-                  </option>
-                ))}
-              </NativeSelect>
-            )}
-          </Field>
+          <CategorySelect name="expenseCategoryId" label="Category" categories={expenseCategories} error={errors["expenseCategoryId"]} value={values["expenseCategoryId"]} />
         ) : null}
         <Field name="amount" label="Amount" hint={amountHint} error={errors["amount"]}>
           {(props) => (
@@ -390,9 +319,7 @@ export function TransactionForm({
       </Field>
       <FormError state={state} />
       <div>
-        <Button type="submit" disabled={pending}>
-          {pending ? "Saving…" : ACTION_LABEL[kind]}
-        </Button>
+        <Button type="submit" loading={pending} loadingText="Saving…">{ACTION_LABEL[kind]}</Button>
       </div>
     </form>
   );

@@ -1,23 +1,16 @@
 import { randomUUID } from "node:crypto";
 
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import type { AuthorizedOwner } from "@/server/auth/types";
-import { createPrismaClient } from "@/server/db/client";
 import { IdempotencyConflictError } from "@/server/ledger/errors";
 
-import { runCleanup } from "./support/cleanup";
-import { seedOwner } from "./support/db";
+import { lines, entryAccounts, counts, dataSnapshot, functionCatalog, triggerCatalog, constraintCatalog, migrationRows } from "./support/catalog";
 import { asOwner, authorize, financeFor, ledgerFor } from "./support/ledger";
 import { historyOn } from "./support/pre-migration";
-import {
-  type MigrationSet,
-  type ScratchDatabase,
-  createMigratedScratchDatabase,
-  deployMigrations,
-  migrationSet,
-} from "./support/scratch-db";
+import { type ScratchDatabase, deployMigrations } from "./support/scratch-db";
+import { newOwner, scratchHarness } from "./support/scratch-harness";
 
 /**
  * Milestone 5C (ADR 0008): card payments, that is, repayments of a credit
@@ -34,144 +27,7 @@ const today = "2026-10-25";
 /** The COMMIT-time refusal for a card payment with the wrong account classes. */
 const WRONG_CLASSES = /a card payment pays a credit card from a bank or cash account/;
 
-const scratches: ScratchDatabase[] = [];
-const sets: MigrationSet[] = [];
-const closers: [string, () => Promise<unknown>][] = [];
-
-afterAll(async () => {
-  await runCleanup([
-    ...closers,
-    ...scratches.map((s) => [`drop ${s.name}`, () => s.drop()] as const),
-    ...sets.map((s) => ["remove a temporary migrations copy", async () => s.remove()] as const),
-  ]);
-});
-
-async function scratchDatabase(label: string, through?: string): Promise<ScratchDatabase> {
-  const set = through === undefined ? undefined : migrationSet({ through });
-  if (set) sets.push(set);
-  const scratch = await createMigratedScratchDatabase(label, { migrate: (url) => deployMigrations(url, set) });
-  scratches.push(scratch);
-  return scratch;
-}
-
-/** finora_app's URL for a scratch database (the role is cluster-wide). */
-function appUrl(scratch: ScratchDatabase): string {
-  const url = new URL(inject("local").appDatabaseUrl);
-  url.pathname = `/${scratch.name}`;
-  return url.toString();
-}
-
-/** The finance service as finora_app on a scratch database. */
-function financeOn(scratch: ScratchDatabase) {
-  const prisma = createPrismaClient(appUrl(scratch), 1);
-  closers.push(["disconnect a scratch Prisma client", () => prisma.$disconnect()]);
-  return { prisma, finance: financeFor(prisma) };
-}
-
-/** A raw connection as finora_app on a scratch database (RLS and grants apply). */
-async function appClientOn(scratch: ScratchDatabase): Promise<pg.Client> {
-  const client = new pg.Client({ connectionString: appUrl(scratch) });
-  await client.connect();
-  closers.push(["close a scratch app connection", () => client.end()]);
-  return client;
-}
-
-/** Journal lines of an entry as [ledger account kind, side, amount, currency]. */
-async function lines(db: pg.Client, entryId: string) {
-  const { rows } = await db.query(
-    `SELECT la.kind::text AS kind, l.side::text AS side, l.amount_minor::text AS amount, la.currency_code AS currency
-       FROM finora.journal_lines l JOIN finora.ledger_accounts la ON la.id = l.account_id
-      WHERE l.entry_id = $1 ORDER BY l.line_no`,
-    [entryId],
-  );
-  return rows.map((r) => [r.kind, r.side, r.amount, r.currency]);
-}
-
-/** The ledger accounts an entry touches, as [ledger account id, side, amount]. */
-async function entryAccounts(db: pg.Client, entryId: string) {
-  const { rows } = await db.query(
-    `SELECT l.account_id::text AS account, l.side::text AS side, l.amount_minor::text AS amount
-       FROM finora.journal_lines l WHERE l.entry_id = $1 ORDER BY l.line_no`,
-    [entryId],
-  );
-  return rows.map((r) => [r.account, r.side, r.amount]);
-}
-
-async function counts(db: pg.Client, ownerId: string) {
-  const { rows } = await db.query(
-    `SELECT (SELECT count(*) FROM finora.transactions WHERE owner_id = $1)::int AS transactions,
-            (SELECT count(*) FROM finora.journal_entries WHERE owner_id = $1)::int AS entries,
-            (SELECT count(*) FROM finora.journal_lines WHERE owner_id = $1)::int AS lines`,
-    [ownerId],
-  );
-  return rows[0] as { transactions: number; entries: number; lines: number };
-}
-
-/** Every business and ledger row, so any change by the migration shows. */
-async function dataSnapshot(db: pg.Client) {
-  const tables: [string, string][] = [
-    ["financial_accounts", "id"],
-    ["categories", "id"],
-    ["ledger_accounts", "id"],
-    ["journal_entries", "id"],
-    ["journal_lines", "id"],
-    ["transactions", "id"],
-    ["system_ledger_accounts", "ledger_account_id"],
-    ["category_ledger_accounts", "ledger_account_id"],
-  ];
-  const out: Record<string, unknown[]> = {};
-  for (const [table, order] of tables) out[table] = (await db.query(`SELECT * FROM finora.${table} ORDER BY ${order}`)).rows;
-  return out;
-}
-
-/** Every finora function's security attributes, owner, privileges and body. */
-async function functionCatalog(db: pg.Client) {
-  const { rows } = await db.query(
-    `SELECT p.proname, p.prosecdef, p.provolatile, coalesce(array_to_string(p.proconfig, ','), '') AS config,
-            pg_get_userbyid(p.proowner) AS owner, coalesce(p.proacl::text, '') AS acl, md5(pg_get_functiondef(p.oid)) AS body
-       FROM pg_proc p WHERE p.pronamespace = 'finora'::regnamespace ORDER BY p.proname, p.oid`,
-  );
-  return rows as { proname: string; body: string }[];
-}
-
-/** Every user trigger on finora tables, with its wiring and enabled state. */
-async function triggerCatalog(db: pg.Client) {
-  const { rows } = await db.query(
-    `SELECT t.tgrelid::regclass::text AS tbl, t.tgname, t.tgfoid::regproc::text AS fn, t.tgenabled, t.tgtype,
-            t.tgdeferrable, t.tginitdeferred
-       FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
-      WHERE c.relnamespace = 'finora'::regnamespace AND NOT t.tgisinternal ORDER BY 1, 2`,
-  );
-  return rows;
-}
-
-/** Every CHECK and foreign-key constraint on finora.transactions, by name. */
-async function constraintCatalog(db: pg.Client) {
-  const { rows } = await db.query(
-    `SELECT con.conname, con.contype::text AS contype, con.convalidated, pg_get_constraintdef(con.oid) AS def
-       FROM pg_constraint con WHERE con.conrelid = 'finora.transactions'::regclass ORDER BY con.conname`,
-  );
-  return rows as { conname: string; contype: string; convalidated: boolean; def: string }[];
-}
-
-async function migrationRows(db: pg.Client, name: string) {
-  const { rows } = await db.query(
-    `SELECT finished_at IS NOT NULL AS finished, rolled_back_at IS NOT NULL AS rolled_back
-       FROM finora._prisma_migrations WHERE migration_name = $1 ORDER BY started_at`,
-    [name],
-  );
-  return rows;
-}
-
-/** A new owner with the default categories on `scratch`. */
-async function newOwner(db: pg.Client, finance: ReturnType<typeof financeFor>, prisma: Parameters<typeof authorize>[0]) {
-  const seeded = await seedOwner(db);
-  const owner = await authorize(prisma, seeded.subject);
-  await finance.initializeDefaultCategories(owner);
-  const categories = await finance.listCategories(owner);
-  const named = (name: string) => categories.find((c) => c.name === name)!;
-  return { seeded, owner, named };
-}
+const { scratchDatabase, financeOn, appClientOn, deployThrough } = scratchHarness();
 
 describe("migrations 20261026000000_card_payment_kind and 20261026000100_card_payments", () => {
   it("add a kind and a rule without changing a row, a trigger or any other rule, and then accept card payments", async () => {
@@ -222,9 +78,7 @@ describe("migrations 20261026000000_card_payment_kind and 20261026000100_card_pa
     // The real project migrations, as on a deployment, but stopping at 5C:
     // this test's subject is those two files, and later milestones change the
     // catalogs compared below.
-    const upTo5C = migrationSet({ through: CARD_PAYMENTS });
-    sets.push(upTo5C);
-    deployMigrations(scratch.url, upTo5C);
+    deployThrough(scratch, CARD_PAYMENTS);
 
     expect(await migrationRows(db, CARD_PAYMENT_KIND)).toEqual([{ finished: true, rolled_back: false }]);
     expect(await migrationRows(db, CARD_PAYMENTS)).toEqual([{ finished: true, rolled_back: false }]);

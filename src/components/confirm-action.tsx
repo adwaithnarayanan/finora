@@ -1,18 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import { useFormStatus } from "react-dom";
+import { useActionState, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-
-function Submit({ children, variant }: { children: React.ReactNode; variant: "destructive" | "default" }) {
-  const { pending } = useFormStatus();
-  return (
-    <Button type="submit" variant={variant} size="sm" disabled={pending}>
-      {pending ? "Working…" : children}
-    </Button>
-  );
-}
 
 /**
  * A destructive or significant action that needs a second, explicit click.
@@ -35,6 +25,10 @@ export function ConfirmAction({
   variant?: "destructive" | "default";
 }) {
   const [open, setOpen] = useState(false);
+  const [, submit, pending] = useActionState(async (_: null, formData: FormData) => {
+    await action(formData);
+    return null;
+  }, null);
   if (!open) {
     return (
       <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
@@ -43,7 +37,7 @@ export function ConfirmAction({
     );
   }
   return (
-    <form action={action} className="grid gap-2 rounded-lg border p-3" aria-label={label}>
+    <form action={submit} className="grid gap-2 rounded-lg border p-3" aria-label={label}>
       {Object.entries(fields).map(([name, value]) => (
         <input key={name} type="hidden" name={name} value={value} />
       ))}
@@ -51,7 +45,9 @@ export function ConfirmAction({
         {description}
       </p>
       <div className="flex flex-wrap gap-2">
-        <Submit variant={variant}>{confirmLabel}</Submit>
+        <Button type="submit" variant={variant} size="sm" loading={pending} loadingText="Working…">
+          {confirmLabel}
+        </Button>
         <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
           Cancel
         </Button>

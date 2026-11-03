@@ -43,14 +43,27 @@ function Button({
   className,
   variant = "default",
   size = "default",
+  loading = false,
+  loadingText,
+  disabled,
+  children,
   ...props
-}: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
+}: ButtonPrimitive.Props &
+  VariantProps<typeof buttonVariants> & {
+    /** Disables the button while work is in progress. */
+    loading?: boolean
+    /** Replaces the label while `loading`. */
+    loadingText?: string
+  }) {
   return (
     <ButtonPrimitive
       data-slot="button"
       className={cn(buttonVariants({ variant, size, className }))}
+      disabled={disabled || loading}
       {...props}
-    />
+    >
+      {loading && loadingText ? loadingText : children}
+    </ButtonPrimitive>
   )
 }
 

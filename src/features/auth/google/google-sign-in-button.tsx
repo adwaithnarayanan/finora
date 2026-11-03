@@ -1,26 +1,23 @@
 "use client";
 
-import { useFormStatus } from "react-dom";
+import { useActionState } from "react";
 
 import { Button } from "@/components/ui/button";
 
 import { signInWithGoogle } from "./actions";
 
-function SubmitButton() {
-  const { pending } = useFormStatus();
-  return (
-    <Button type="submit" disabled={pending} className="w-full">
-      {pending ? "Redirecting to Google…" : "Continue with Google"}
-    </Button>
-  );
-}
-
 /** DEFERRED (ADR 0003): the Google sign-in control. Not rendered in email/password mode. */
 export function GoogleSignInButton({ next }: { next?: string }) {
+  const [, submit, pending] = useActionState(async (_: null, formData: FormData) => {
+    await signInWithGoogle(formData);
+    return null;
+  }, null);
   return (
-    <form action={signInWithGoogle} className="grid gap-4">
+    <form action={submit} className="grid gap-4">
       {next ? <input type="hidden" name="next" value={next} /> : null}
-      <SubmitButton />
+      <Button type="submit" loading={pending} loadingText="Redirecting to Google…" className="w-full">
+        Continue with Google
+      </Button>
     </form>
   );
 }

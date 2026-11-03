@@ -95,6 +95,16 @@ async function createAccount(page: Page, name: string, opts: { type?: string; op
   await expect(page.getByRole("heading", { level: 1, name: new RegExp(name) })).toBeVisible();
 }
 
+/** Creates a credit card with an amount owed through the form; lands on its page. */
+async function createCreditCard(page: Page, name: string, opts: { owed: string; asOf: string }) {
+  await page.goto("/accounts/new");
+  await page.getByLabel("Account name").fill(name);
+  await page.getByLabel("Type").selectOption("credit_card");
+  await page.getByLabel("Amount owed today").fill(opts.owed);
+  await page.getByLabel("As of").fill(opts.asOf);
+  await page.getByRole("button", { name: "Create account" }).click();
+}
+
 /** HDFC Savings (₹50,000 opening balance on 1 Oct 2026) and an empty cash Wallet. */
 async function createSampleAccounts(page: Page) {
   await createAccount(page, "HDFC Savings", { opening: "50000", asOf: "2026-10-01" });
@@ -385,12 +395,7 @@ test.describe("accounts and transactions (owner)", () => {
   test("record an expense paid by card: the amount owed grows and the card's history shows it", async ({ page }) => {
     await addDefaultCategories(page);
     await createAccount(page, "Axis Savings", { opening: "50000", asOf: "2026-10-01" });
-    await page.goto("/accounts/new");
-    await page.getByLabel("Account name").fill("HDFC Card");
-    await page.getByLabel("Type").selectOption("credit_card");
-    await page.getByLabel("Amount owed today").fill("12000");
-    await page.getByLabel("As of").fill("2026-10-01");
-    await page.getByRole("button", { name: "Create account" }).click();
+    await createCreditCard(page, "HDFC Card", { owed: "12000", asOf: "2026-10-01" });
     await expect(balanceOn(page)).toHaveText("Owed ₹12,000.00");
 
     // From the card's page, the card is preselected as the paying account.
@@ -441,12 +446,7 @@ test.describe("accounts and transactions (owner)", () => {
   test("record a repayment from a bank account to a credit card: the amount owed and the balance both fall", async ({ page }) => {
     await addDefaultCategories(page);
     await createAccount(page, "Axis Savings", { opening: "50000", asOf: "2026-10-01" });
-    await page.goto("/accounts/new");
-    await page.getByLabel("Account name").fill("HDFC Card");
-    await page.getByLabel("Type").selectOption("credit_card");
-    await page.getByLabel("Amount owed today").fill("12000");
-    await page.getByLabel("As of").fill("2026-10-01");
-    await page.getByRole("button", { name: "Create account" }).click();
+    await createCreditCard(page, "HDFC Card", { owed: "12000", asOf: "2026-10-01" });
     await expect(balanceOn(page)).toHaveText("Owed ₹12,000.00");
 
     // A card expense first, so the repayment is measured against real spending.
@@ -605,12 +605,7 @@ test.describe("accounts and transactions (owner)", () => {
   async function cardWithPurchase(page: Page) {
     await addDefaultCategories(page);
     await createAccount(page, "Axis Savings", { opening: "50000", asOf: "2026-10-01" });
-    await page.goto("/accounts/new");
-    await page.getByLabel("Account name").fill("HDFC Card");
-    await page.getByLabel("Type").selectOption("credit_card");
-    await page.getByLabel("Amount owed today").fill("12000");
-    await page.getByLabel("As of").fill("2026-10-01");
-    await page.getByRole("button", { name: "Create account" }).click();
+    await createCreditCard(page, "HDFC Card", { owed: "12000", asOf: "2026-10-01" });
     await expect(balanceOn(page)).toHaveText("Owed ₹12,000.00");
 
     await page.getByRole("link", { name: "Record card expense" }).click();
