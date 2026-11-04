@@ -88,6 +88,36 @@ test.describe("password sign-in", () => {
     }
   });
 
+  test("the sign-in button shows a pending state and a double submit sends one request", async ({
+    page,
+  }) => {
+    let submissions = 0;
+    await page.route("**/login*", async (route) => {
+      const request = route.request();
+      if (request.method() === "POST" && request.headers()["next-action"]) {
+        submissions += 1;
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      await route.continue();
+    });
+
+    await page.goto("/login");
+    await page.getByLabel("Email").fill(users.owner.email);
+    await page
+      .getByLabel("Password", { exact: true })
+      .fill(users.owner.password);
+    await page.getByRole("button", { name: "Sign in" }).click();
+
+    const pending = page.getByRole("button", { name: "Signing in…" });
+    await expect(pending).toBeDisabled();
+    await pending.click({ force: true });
+    await page.getByLabel("Password", { exact: true }).press("Enter");
+
+    await expect(page).toHaveURL(/\/$/);
+    expect(submissions).toBe(1);
+    await page.getByRole("button", { name: "Sign out" }).click();
+  });
+
   test("the owner signs in, sees the app, and signs out", async ({
     page,
     context,

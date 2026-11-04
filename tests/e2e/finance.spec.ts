@@ -359,6 +359,32 @@ test.describe("accounts and transactions (owner)", () => {
     await expect(page.getByText(/This account is archived/)).toHaveCount(0);
   });
 
+  test("archive confirmation shows a pending state and a double submit sends one request", async ({
+    page,
+  }) => {
+    await createSampleHistory(page);
+    await openAccount(page, "Wallet");
+    let submissions = 0;
+    await page.route("**/accounts/**", async (route) => {
+      const request = route.request();
+      if (request.method() === "POST" && request.headers()["next-action"]) {
+        submissions += 1;
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      await route.continue();
+    });
+
+    await page.getByRole("button", { name: "Archive account" }).click();
+    await page.getByRole("button", { name: "Yes, archive" }).click();
+
+    const pending = page.getByRole("button", { name: "Working…" });
+    await expect(pending).toBeDisabled();
+    await pending.click({ force: true });
+
+    await expect(page.getByText(/This account is archived/)).toBeVisible();
+    expect(submissions).toBe(1);
+  });
+
   test("an unused account can be deleted after confirmation", async ({
     page,
   }) => {
