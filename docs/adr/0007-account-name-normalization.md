@@ -193,10 +193,13 @@ column collation, so the catalog check is the authority for it.
 ### Runtime pinning
 
 Keys depend on the runtime's Unicode data (ICU). The project pins
-**Node 24.22.1** (ICU 78.3, Unicode 17.0) exactly, in `.nvmrc` and
-`package.json` `engines` (`engine-strict`). CI uses `.nvmrc`. A unit test
-fails on any other Node version, and another asserts the ICU and Unicode
-versions. Node patch releases can update ICU, so the pin is exact.
+**Node 24.22.1** (ICU 78.3, Unicode 17.0) exactly in `.nvmrc`. CI uses
+`.nvmrc`. A unit test fails on any other Node version, and another asserts the
+ICU and Unicode versions. Node patch releases can update ICU, so the pin is
+exact. `package.json` `engines` (`engine-strict`) allows only the major,
+`24.x`, because Vercel can select only a major version and builds on its
+latest patch. Production can therefore run a different patch than CI, and
+nothing in production checks its ICU version yet.
 
 ## Limitations and assumptions
 

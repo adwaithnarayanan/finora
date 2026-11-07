@@ -71,13 +71,13 @@ function random(seed: number) {
 }
 
 describe("pinned runtime", () => {
-  it("runs on the Node version pinned in .nvmrc and package.json engines", () => {
+  it("runs on the Node version pinned in .nvmrc, within the engines major", () => {
     const pinned = readFileSync(path.join(root, ".nvmrc"), "utf8").trim();
     const engines = JSON.parse(
       readFileSync(path.join(root, "package.json"), "utf8"),
     ).engines.node;
     expect(pinned).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(engines).toBe(pinned);
+    expect(engines).toBe(`${pinned.split(".")[0]}.x`);
     expect(process.version).toBe(`v${pinned}`);
   });
 
