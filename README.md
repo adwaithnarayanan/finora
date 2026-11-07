@@ -11,7 +11,8 @@ Architecture and decisions: [`docs/adr/`](docs/adr/). Operations:
 ## Requirements
 
 - Node.js 24.22.1 exactly (see `.nvmrc`). `npm install`/`npm ci` refuse any
-  other version (`engine-strict` in `.npmrc`), and a unit test fails on one:
+  Node other than 24.x (`engine-strict` in `.npmrc`; Vercel can only pin the
+  major), and a unit test fails on anything but `.nvmrc`'s exact version:
   account-name comparison keys depend on Node's Unicode data (ADR 0007). With
   a version manager: `nvm use` or `fnm use`.
 - npm. The committed `package-lock.json` is the source of truth.
