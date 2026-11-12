@@ -5,6 +5,12 @@ import type { Prisma, PrismaClient } from "./generated/client";
 
 export type ScopedTx = Prisma.TransactionClient;
 
+// Prisma's default interactive-transaction limit is 5s. Over the hosted
+// pooler every statement is a network round trip, and multi-step writes such
+// as creating an account exceed that (P2028). Stay under the role's 15s
+// statement_timeout and 30s idle_in_transaction_session_timeout.
+const TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 14_000 } as const;
+
 /**
  * Runs `fn` in a transaction whose RLS context is the authorised owner.
  *
@@ -23,7 +29,7 @@ export async function runInOwnerScope<T>(
   return db.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('finora.owner_id', ${ownerId}, true)`;
     return fn(tx);
-  });
+  }, TRANSACTION_OPTIONS);
 }
 
 export async function runInIdentityContext<T>(
@@ -34,5 +40,5 @@ export async function runInIdentityContext<T>(
   return db.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('finora.auth_provider', ${identity.provider}, true), set_config('finora.auth_subject', ${identity.subject}, true)`;
     return fn(tx);
-  });
+  }, TRANSACTION_OPTIONS);
 }
